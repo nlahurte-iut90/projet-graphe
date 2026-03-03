@@ -106,31 +106,46 @@ class CorrelationService:
 
         # NIVEAUX SUIVANTS: Expansion récursive avec get_transactions_for_address
         if expansion_depth > 1:
-            current_level = [address1, address2]
+            # Après le niveau 0, tous les nœuds (sauf les principaux) sont le niveau actuel
+            current_level_addrs = list(set(self.graph.nodes()) - visited)
+            current_level = [Address(addr) for addr in current_level_addrs]
 
             for depth in range(1, expansion_depth):
                 print(f"\n[Expansion] Level {depth + 1}/{expansion_depth}")
 
-                # Calculer les scores pour trouver les meilleurs candidats
-                table1 = self.calculate_relationship_scores(address1)
-                table2 = self.calculate_relationship_scores(address2)
+                if not current_level:
+                    print(f"[Expansion] No nodes to expand at this level, stopping")
+                    break
 
-                # Sélectionner les candidats
-                candidates = self._select_expansion_candidates(table1, table2, top_n, visited)
+                # Collecter les candidats depuis TOUS les nœuds du niveau actuel
+                all_candidates = {}
+                for node_addr in current_level:
+                    table = self.calculate_relationship_scores(node_addr)
+                    top_rels = table.get_top_relationships(top_n * 2)
+
+                    for rel in top_rels:
+                        candidate = rel.target.address
+                        if candidate not in visited:
+                            if candidate not in all_candidates or rel.total_score > all_candidates[candidate][1]:
+                                all_candidates[candidate] = (rel.target, rel.total_score)
+
+                # Sélectionner les top_n meilleurs
+                sorted_candidates = sorted(all_candidates.values(), key=lambda x: x[1], reverse=True)
+                candidates = [addr for addr, _ in sorted_candidates[:top_n]]
 
                 if not candidates:
                     print(f"[Expansion] No new candidates found, stopping expansion early")
                     break
 
-                print(f"[Expansion] Processing {len(candidates)} new addresses...")
+                print(f"[Expansion] Expanding {len(current_level)} nodes -> {len(candidates)} new candidates")
 
-                # Utiliser get_transactions_for_address pour l'expansion (nécessite plus de données)
+                # Récupérer les transactions pour chaque candidat
                 for addr in candidates:
                     df = self.dune_adapter.get_transactions_for_address(addr.address, limit=5)
                     self._add_transactions_to_graph(df)
 
                 visited.update(a.address for a in candidates)
-                current_level = candidates
+                current_level = candidates  # Les nouveaux candidats deviennent le niveau suivant
                 print(f"[Expansion] Level complete: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
 
         print(f"\n[Expansion] Graph built: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
@@ -140,79 +155,110 @@ class CorrelationService:
         """
         Visualize the graph using Matplotlib.
         addr1 is fixed on the left, addr2 on the right.
+        Tous les nœuds du graphe sont positionnés selon leur distance aux adresses principales.
         """
         if self.graph.number_of_nodes() == 0:
             print("Graph is empty, nothing to visualize.")
             return
 
-        plt.figure(figsize=(14, 9))
-        
-        # Use the MultiDiGraph directly
-        viz_graph = self.graph
+        plt.figure(figsize=(16, 10))
 
-        # 1. Compute Layout - Custom Split Cluster
-        import math
-        
+        viz_graph = self.graph
         pos = {}
-        
-        # Centers
-        p1 = (-2.0, 0.0)
-        p2 = (2.0, 0.0)
+
+        # Positions fixes pour les adresses principales
+        p1 = (-3.0, 0.0)
+        p2 = (3.0, 0.0)
         pos[address1.address] = p1
         pos[address2.address] = p2
-        
-        # Identify neighbors
-        # We need to know who is connected to whom in the simplified graph
-        # But we can check edge existence in the main graph or viz_graph
-        neighbors1 = set(viz_graph.successors(address1.address)) | set(viz_graph.predecessors(address1.address))
-        neighbors2 = set(viz_graph.successors(address2.address)) | set(viz_graph.predecessors(address2.address))
-        
-        # Exclude the main nodes themselves from neighbor sets if present
-        neighbors1.discard(address1.address)
-        neighbors1.discard(address2.address)
-        neighbors2.discard(address1.address)
-        neighbors2.discard(address2.address)
-        
-        common = neighbors1.intersection(neighbors2)
-        unique1 = neighbors1 - common
-        unique2 = neighbors2 - common
-        
-        # Helper to arrange nodes in a circle
-        def arrange_circle(nodes, center, radius, start_angle=0, end_angle=2*math.pi):
-            sorted_nodes = sorted(list(nodes)) # Sort for deterministic layout
-            count = len(sorted_nodes)
-            if count == 0: return
-            step = (end_angle - start_angle) / count
-            for i, node in enumerate(sorted_nodes):
-                angle = start_angle + i * step
-                x = center[0] + radius * math.cos(angle)
-                y = center[1] + radius * math.sin(angle)
-                pos[node] = (x, y)
 
-        # Arrange Left Cluster (Addr1) - Fan out to the left
-        # Angles from pi/2 to 3pi/2 (90 to 270 degrees) to face away from center
-        arrange_circle(unique1, p1, radius=1.0, start_angle=math.pi/2, end_angle=2.5*math.pi)
-        
-        # Arrange Right Cluster (Addr2) - Fan out to the right
-        # Angles from -pi/2 to pi/2 (-90 to 90 degrees)
-        arrange_circle(unique2, p2, radius=1.0, start_angle=-math.pi/2, end_angle=1.5*math.pi)
-        
-        # Arrange Common Nodes - In the middle
-        if common:
-            # Spread vertically at x=0
-            sorted_common = sorted(list(common))
-            h_step = 4.0 / (len(sorted_common) + 1)
-            start_y = -2.0
-            for i, node in enumerate(sorted_common):
-                pos[node] = (0, start_y + (i + 1) * h_step)
-        
-        # Handle any outliers (connected to neighbors but not main nodes directly? 
-        # In this dataset, unlikely, but fallback to prevent crash)
+        # Calculer les distances (profondeur) depuis chaque adresse principale
+        undirected = viz_graph.to_undirected()
+
+        try:
+            dist_from_1 = nx.single_source_shortest_path_length(undirected, address1.address)
+        except:
+            dist_from_1 = {address1.address: 0}
+
+        try:
+            dist_from_2 = nx.single_source_shortest_path_length(undirected, address2.address)
+        except:
+            dist_from_2 = {address2.address: 0}
+
+        # Grouper les nœuds par profondeur minimale
+        depth_groups = {}
+        max_depth = 0
+
+        for node in viz_graph.nodes():
+            if node == address1.address or node == address2.address:
+                continue
+
+            d1 = dist_from_1.get(node, float('inf'))
+            d2 = dist_from_2.get(node, float('inf'))
+            depth = min(d1, d2)
+
+            if depth < float('inf'):
+                if depth not in depth_groups:
+                    depth_groups[depth] = []
+                depth_groups[depth].append((node, d1, d2))
+                max_depth = max(max_depth, depth)
+
+        # Positionner les nœuds par profondeur
+        for depth in range(1, max_depth + 1):
+            if depth not in depth_groups:
+                continue
+
+            nodes_at_depth = depth_groups[depth]
+            left_nodes = []
+            right_nodes = []
+            center_nodes = []
+
+            for node, d1, d2 in nodes_at_depth:
+                if d1 < d2:
+                    left_nodes.append(node)
+                elif d2 < d1:
+                    right_nodes.append(node)
+                else:
+                    center_nodes.append(node)
+
+            # Rayon augmente avec la profondeur
+            radius = 1.5 + (depth - 1) * 1.0
+
+            # Positionner à gauche (proche de addr1)
+            if left_nodes:
+                n = len(left_nodes)
+                # Arc de 90° à 270° (gauche)
+                start_ang = math.pi / 2
+                end_ang = 3 * math.pi / 2
+                step = (end_ang - start_ang) / max(n, 1)
+                for i, node in enumerate(sorted(left_nodes)):
+                    ang = start_ang + i * step + step/2
+                    pos[node] = (p1[0] + radius * math.cos(ang), p1[1] + radius * math.sin(ang))
+
+            # Positionner à droite (proche de addr2)
+            if right_nodes:
+                n = len(right_nodes)
+                # Arc de -90° à 90° (droite)
+                start_ang = -math.pi / 2
+                end_ang = math.pi / 2
+                step = (end_ang - start_ang) / max(n, 1)
+                for i, node in enumerate(sorted(right_nodes)):
+                    ang = start_ang + i * step + step/2
+                    pos[node] = (p2[0] + radius * math.cos(ang), p2[1] + radius * math.sin(ang))
+
+            # Positionner au centre (distance égale)
+            if center_nodes:
+                n = len(center_nodes)
+                h_step = 4.0 / max(n + 1, 1)
+                start_y = -2.0
+                for i, node in enumerate(sorted(center_nodes)):
+                    pos[node] = (0, start_y + (i + 1) * h_step)
+
+        # Fallback pour les nœuds non positionnés
         remaining = set(viz_graph.nodes()) - set(pos.keys())
         if remaining:
-             # Just place them arbitrarily or use spring for them
-             sub_pos = nx.spring_layout(viz_graph.subgraph(remaining), center=(0,0))
-             pos.update(sub_pos)
+            sub_pos = nx.spring_layout(viz_graph.subgraph(remaining), center=(0, 0))
+            pos.update(sub_pos)
         
         # 3. Draw Nodes
         node_colors = []

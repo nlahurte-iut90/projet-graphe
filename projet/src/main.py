@@ -37,8 +37,12 @@ def main():
     dune_adapter = DuneAdapter()
     correlation_service = CorrelationService(dune_adapter)
 
+    # Paramètres d'expansion
+    expansion_depth = 2  # 1 = base seule, 2 = 1 niveau d'expansion, etc.
+    top_n = 3  # Nombre de nœuds à sélectionner par niveau
+
     with console.status("[bold green]Construction du graphe de transactions..."):
-        correlation_service.build_graph(address1, address2)
+        correlation_service.build_graph(address1, address2, expansion_depth=expansion_depth, top_n=top_n)
 
     # Calcul des tableaux de relation pour chaque main address
     with console.status("[bold green]Calcul des scores de relation..."):
@@ -52,7 +56,7 @@ def main():
     formatter.display_both_tables(table1, table2, limit=10)
 
     # Calcul et affichage du score de corrélation global
-    result = correlation_service.calculate_score(address1, address2)
+    result = correlation_service.calculate_score(address1, address2, expansion_depth=expansion_depth, top_n=top_n)
 
     # Affichage du résumé
     formatter.display_summary(address1, address2, result.score, table1, table2)

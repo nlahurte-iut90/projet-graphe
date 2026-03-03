@@ -228,80 +228,115 @@ Time: {timestamp}"""
         graph: nx.MultiDiGraph,
         main_addresses: List[Address]
     ) -> Dict[str, Tuple[int, int]]:
-        """Calcule les positions des nœuds pour un layout en étoile."""
+        """Calcule les positions des nœuds selon leur profondeur (distance aux adresses principales)."""
         positions = {}
         if len(main_addresses) < 1:
             return positions
 
-        # Positions - adresses principales aux EXTRÉMITÉS gauche et droite
-        # Utiliser une largeur importante pour les placer aux bords
-        screen_half_width = 800  # Demi-largeur de la zone de visualisation
-
-        # Adresses principales positionnées aux extrémités gauche et droite
-        positions[main_addresses[0].address] = (-screen_half_width, 0)
-        if len(main_addresses) > 1:
-            positions[main_addresses[1].address] = (screen_half_width, 0)
-
+        screen_half_width = 800
         addr1 = main_addresses[0].address
         addr2 = main_addresses[1].address if len(main_addresses) > 1 else None
 
-        # Récupérer tous les voisins
-        neighbors1 = set(graph.successors(addr1)) | set(graph.predecessors(addr1))
-        neighbors2 = set(graph.successors(addr2)) | set(graph.predecessors(addr2)) if addr2 else set()
-        neighbors1.discard(addr1)
-        neighbors1.discard(addr2)
-        neighbors2.discard(addr1)
-        neighbors2.discard(addr2)
+        # Positionner les adresses principales aux extrémités
+        positions[addr1] = (-screen_half_width, 0)
+        if addr2:
+            positions[addr2] = (screen_half_width, 0)
 
-        common = neighbors1 & neighbors2
-        unique1 = neighbors1 - common
-        unique2 = neighbors2 - common
+        # Calculer les distances depuis chaque adresse principale
+        undirected_graph = graph.to_undirected()
 
-        radius_neighbors = 500
+        try:
+            dist_from_1 = nx.single_source_shortest_path_length(undirected_graph, addr1)
+        except:
+            dist_from_1 = {addr1: 0}
 
-        # Voisins uniques d'addr1 - à gauche en arc
-        unique1_list = sorted(list(unique1))
-        n1 = len(unique1_list)
-        if n1 > 0:
-            # Arc de 120° à 240° (gauche)
-            start_ang = 2 * math.pi / 3
-            end_ang = 4 * math.pi / 3
-            step = (end_ang - start_ang) / max(n1, 1)
-            for i, node in enumerate(unique1_list):
-                ang = start_ang + i * step + step/2
-                positions[node] = (int(radius_neighbors * math.cos(ang)), int(radius_neighbors * math.sin(ang)))
+        dist_from_2 = {}
+        if addr2:
+            try:
+                dist_from_2 = nx.single_source_shortest_path_length(undirected_graph, addr2)
+            except:
+                dist_from_2 = {addr2: 0}
 
-        # Voisins uniques d'addr2 - à droite en arc
-        unique2_list = sorted(list(unique2))
-        n2 = len(unique2_list)
-        if n2 > 0:
-            # Arc de -60° à 60° (droite)
-            start_ang = -math.pi / 3
-            end_ang = math.pi / 3
-            step = (end_ang - start_ang) / max(n2, 1)
-            for i, node in enumerate(unique2_list):
-                ang = start_ang + i * step + step/2
-                positions[node] = (int(radius_neighbors * math.cos(ang)), int(radius_neighbors * math.sin(ang)))
+        # Grouper les nœuds par profondeur minimale
+        depth_groups: Dict[int, List[Tuple[str, int, int]]] = {}
+        max_depth = 0
 
-        # Voisins communs - en bas
-        common_list = sorted(list(common))
-        n_common = len(common_list)
-        if n_common > 0:
-            # Arc de 200° à 340° (bas)
-            start_ang = 5 * math.pi / 4
-            end_ang = 7 * math.pi / 4
-            step = (end_ang - start_ang) / max(n_common, 1)
-            for i, node in enumerate(common_list):
-                ang = start_ang + i * step + step/2
-                positions[node] = (int(radius_neighbors * math.cos(ang)), int(radius_neighbors * math.sin(ang)))
+        for node in graph.nodes():
+            if node == addr1 or node == addr2:
+                continue
 
-        # Nœuds restants (ne devraient pas y en avoir avec ce layout)
+            d1 = dist_from_1.get(node, float('inf'))
+            d2 = dist_from_2.get(node, float('inf')) if addr2 else float('inf')
+            depth = min(d1, d2)
+
+            if depth < float('inf'):
+                if depth not in depth_groups:
+                    depth_groups[depth] = []
+                depth_groups[depth].append((node, d1, d2))
+                max_depth = max(max_depth, depth)
+
+        # Positionner les nœuds par profondeur
+        for depth in range(1, max_depth + 1):
+            if depth not in depth_groups:
+                continue
+
+            nodes_at_depth = depth_groups[depth]
+            left_nodes = []
+            right_nodes = []
+            center_nodes = []
+
+            for node, d1, d2 in nodes_at_depth:
+                if d1 < d2:
+                    left_nodes.append(node)
+                elif d2 < d1:
+                    right_nodes.append(node)
+                else:
+                    center_nodes.append(node)
+
+            # Rayon augmente avec la profondeur
+            radius = 400 + (depth - 1) * 250
+
+            # Positionner à gauche (proche de addr1)
+            if left_nodes:
+                n = len(left_nodes)
+                # Arc de 120° à 240° (gauche)
+                start_ang = 2 * math.pi / 3
+                end_ang = 4 * math.pi / 3
+                step = (end_ang - start_ang) / max(n, 1)
+                for i, node in enumerate(sorted(left_nodes)):
+                    ang = start_ang + i * step + step/2
+                    x = -screen_half_width + int(radius * math.cos(ang))
+                    y = int(radius * math.sin(ang))
+                    positions[node] = (x, y)
+
+            # Positionner à droite (proche de addr2)
+            if right_nodes:
+                n = len(right_nodes)
+                # Arc de -60° à 60° (droite)
+                start_ang = -math.pi / 3
+                end_ang = math.pi / 3
+                step = (end_ang - start_ang) / max(n, 1)
+                for i, node in enumerate(sorted(right_nodes)):
+                    ang = start_ang + i * step + step/2
+                    x = screen_half_width + int(radius * math.cos(ang))
+                    y = int(radius * math.sin(ang))
+                    positions[node] = (x, y)
+
+            # Positionner au centre (distance égale)
+            if center_nodes:
+                n = len(center_nodes)
+                h_step = 300 / max(n + 1, 1)
+                start_y = -150
+                for i, node in enumerate(sorted(center_nodes)):
+                    positions[node] = (0, int(start_y + (i + 1) * h_step))
+
+        # Fallback pour les nœuds non positionnés
         remaining = set(graph.nodes()) - set(positions.keys())
         if remaining:
             n_rem = len(remaining)
             for i, node in enumerate(sorted(list(remaining))):
-                ang = 2 * math.pi * i / n_rem
-                positions[node] = (int(600 * math.cos(ang)), int(600 * math.sin(ang)))
+                ang = 2 * math.pi * i / max(n_rem, 1)
+                positions[node] = (int(800 * math.cos(ang)), int(800 * math.sin(ang)))
 
         return positions
 
