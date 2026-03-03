@@ -6,6 +6,7 @@ from src.domain.models import Address, CorrelationResult, RelationshipScore, Add
 from src.adapters.dune import DuneAdapter
 import pandas as pd
 import math
+import time
 from typing import Tuple, List, Optional, Dict, Set
 from datetime import datetime
 
@@ -47,55 +48,84 @@ class CorrelationService:
         """
         Sélectionne les meilleurs candidats d'expansion depuis une liste de nœuds.
 
-        Optimisation : Ne calcule les scores que pour les max_nodes_to_process nœuds
-        les plus prometteurs (ceux avec le plus de transactions), pas pour tous.
+        Processus correct d'expansion:
+        1. Récupère les transactions des nœuds du niveau actuel (appels API)
+        2. Ajoute ces transactions au graphe (découvre de nouvelles adresses)
+        3. Sélectionne les top_n nouvelles adresses pour le niveau suivant
 
         Args:
-            nodes: Liste des nœuds à analyser
-            top_n: Nombre de candidats à retourner
+            nodes: Liste des nœuds à expandre (niveau actuel)
+            top_n: Nombre de candidats à retourner pour le niveau suivant
             visited: Set des adresses déjà visitées
-            max_nodes_to_process: Nombre max de nœuds à traiter (optimisation perf)
+            max_nodes_to_process: Nombre max de nœuds à expandre (limiter les appels API)
 
         Returns:
-            Liste des top_n meilleurs candidats
+            Liste des top_n meilleurs candidats découverts
         """
         if not nodes:
             return []
 
-        # Trier les nœuds par nombre de transactions (desc) pour traiter les plus actifs
+        # Trier les nœuds par activité (degré dans le graphe) pour prioriser les plus connectés
         nodes_by_activity = sorted(
             nodes,
             key=lambda addr: self.graph.degree(addr.address),
             reverse=True
         )
 
-        # Ne traiter que les plus actifs pour optimiser
-        nodes_to_process = nodes_by_activity[:max_nodes_to_process]
+        # Limiter le nombre de nœuds à expandre (optimisation nombre d'appels API)
+        nodes_to_expand = nodes_by_activity[:max_nodes_to_process]
 
-        all_candidates = {}
-        processed = 0
+        print(f"[Expansion] Expanding {len(nodes_to_expand)}/{len(nodes)} nodes from current level...")
 
-        for node_addr in nodes_to_process:
-            # Calculer les scores de relation depuis ce nœud
-            table = self.calculate_relationship_scores(node_addr)
-            processed += 1
+        # AVANT de chercher des candidats, il faut d'abord récupérer les transactions
+        # des nœuds du niveau actuel pour découvrir de nouvelles adresses
+        newly_discovered = {}  # addr -> (Address, score/heuristic)
 
-            # Récupérer les top relations (avec marge pour le filtrage)
-            top_rels = table.get_top_relationships(top_n * 3)
+        for i, node_addr in enumerate(nodes_to_expand):
+            # Petit délai pour éviter le rate limit de l'API Dune
+            if i > 0:
+                time.sleep(0.5)
 
-            for rel in top_rels:
-                candidate = rel.target.address
-                if candidate not in visited and candidate not in [n.address for n in nodes]:
-                    # Garder le meilleur score pour ce candidat
-                    if candidate not in all_candidates or rel.total_score > all_candidates[candidate][1]:
-                        all_candidates[candidate] = (rel.target, rel.total_score)
+            # Récupérer les transactions de ce nœud (appel API Dune)
+            df = self.dune_adapter.get_transactions_for_address(node_addr.address, limit=5)
 
-        if all_candidates:
-            print(f"[Expansion] Processed {processed}/{len(nodes)} nodes, found {len(all_candidates)} unique candidates")
+            if df.empty:
+                continue
 
-        # Sélectionner les top_n meilleurs
-        sorted_candidates = sorted(all_candidates.values(), key=lambda x: x[1], reverse=True)
-        return [addr for addr, _ in sorted_candidates[:top_n]]
+            # Identifier les nouvelles adresses découvertes dans ces transactions
+            existing_nodes = set(self.graph.nodes())
+            for _, row in df.iterrows():
+                sender = str(row['from']).strip().lower()
+                receiver = str(row['to']).strip().lower()
+
+                for addr in [sender, receiver]:
+                    # Une adresse est "nouvelle" si elle n'est pas dans visited ET pas déjà dans le graphe
+                    if addr and addr not in visited and addr not in existing_nodes and addr != node_addr.address:
+                        # Calculer un score heuristique basé sur la valeur des transactions
+                        value = float(row.get('value_eth', 0))
+                        if addr not in newly_discovered:
+                            newly_discovered[addr] = {'addr': Address(addr), 'total_value': 0, 'tx_count': 0}
+                        newly_discovered[addr]['total_value'] += value
+                        newly_discovered[addr]['tx_count'] += 1
+
+            # Ajouter toutes les transactions au graphe (même celles vers des adresses connues)
+            self._add_transactions_to_graph(df)
+
+        if not newly_discovered:
+            print(f"[Expansion] No new addresses discovered from {len(nodes_to_expand)} nodes")
+            return []
+
+        print(f"[Expansion] Discovered {len(newly_discovered)} new unique addresses")
+
+        # Trier les nouvelles adresses par valeur totale des transactions (proxy de l'importance)
+        sorted_new = sorted(
+            newly_discovered.values(),
+            key=lambda x: (x['total_value'], x['tx_count']),
+            reverse=True
+        )
+
+        # Retourner les top_n meilleures nouvelles adresses
+        return [item['addr'] for item in sorted_new[:top_n]]
 
     def build_graph(
         self,
@@ -158,8 +188,10 @@ class CorrelationService:
                     print(f"[Expansion] No nodes to expand at this level, stopping")
                     break
 
-                # Utiliser la méthode optimisée pour sélectionner les candidats
-                # Limite à 10 nœuds traités max pour optimiser les performances
+                # Cette méthode va :
+                # 1. Récupérer les transactions des nœuds du niveau actuel
+                # 2. Découvrir les nouvelles adresses
+                # 3. Retourner les top_n nouvelles adresses
                 candidates = self._get_top_candidates_from_nodes(
                     current_level,
                     top_n=top_n,
@@ -171,15 +203,12 @@ class CorrelationService:
                     print(f"[Expansion] No new candidates found, stopping expansion early")
                     break
 
-                print(f"[Expansion] Fetching transactions for {len(candidates)} selected candidates...")
-
-                # Récupérer les transactions pour chaque candidat
-                for addr in candidates:
-                    df = self.dune_adapter.get_transactions_for_address(addr.address, limit=5)
-                    self._add_transactions_to_graph(df)
-
+                # Marquer les nœuds du niveau actuel comme visités (on ne les retraitera pas)
+                visited.update(a.address for a in current_level)
+                # Marquer aussi les nouveaux candidats comme visités
                 visited.update(a.address for a in candidates)
-                current_level = candidates  # Les nouveaux candidats deviennent le niveau suivant
+                # Les nouveaux candidats deviennent le niveau suivant
+                current_level = candidates
                 print(f"[Expansion] Level complete: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
 
         print(f"\n[Expansion] Graph built: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
