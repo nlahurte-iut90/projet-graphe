@@ -1,0 +1,432 @@
+<html>
+    <head>
+        <meta charset="utf-8">
+        
+            <script src="lib/bindings/utils.js"></script>
+            <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/dist/vis-network.min.css" integrity="sha512-WgxfT5LWjfszlPHXRmBWHkV2eceiWTOBvrKCNbdgDYTHrT2AeLCGbF4sZlZw3UMN3WtL0tGUoIAKsu8mllg/XA==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+            <script src="https://cdnjs.cloudflare.com/ajax/libs/vis-network/9.1.2/dist/vis-network.min.js" integrity="sha512-LnvoEWDFrqGHlHmDD2101OrLcbsfkrzoSpvtSQtxK3RMnRV0eOkhhBN2dXHKRrUU8p2DGRTk35n4O8nWSVe1mQ==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+            
+        
+<center>
+<h1></h1>
+</center>
+
+<!-- <link rel="stylesheet" href="../node_modules/vis/dist/vis.min.css" type="text/css" />
+<script type="text/javascript" src="../node_modules/vis/dist/vis.js"> </script>-->
+        <link
+          href="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/css/bootstrap.min.css"
+          rel="stylesheet"
+          integrity="sha384-eOJMYsd53ii+scO/bJGFsiCZc+5NDVN2yr8+0RDqr0Ql0h+rP48ckxlpbzKgwra6"
+          crossorigin="anonymous"
+        />
+        <script
+          src="https://cdn.jsdelivr.net/npm/bootstrap@5.0.0-beta3/dist/js/bootstrap.bundle.min.js"
+          integrity="sha384-JEW9xMcG8R+pH31jmWH6WWP0WintQrMb4s7ZOdauHnUtxwoG2vI5DkLtS3qm9Ekf"
+          crossorigin="anonymous"
+        ></script>
+
+
+        <center>
+          <h1></h1>
+        </center>
+        <style type="text/css">
+
+             #mynetwork {
+                 width: 100%;
+                 height: 900px;
+                 background-color: #f8f9fa;
+                 border: 1px solid lightgray;
+                 position: relative;
+                 float: left;
+             }
+
+             
+
+             
+
+             
+        </style>
+    </head>
+
+
+    <body>
+        <div class="card" style="width: 100%">
+            
+            
+            <div style="position:absolute;top:15px;left:15px;background:rgba(255,255,255,0.97);padding:12px 16px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.15);font-family:system-ui,sans-serif;z-index:1000;max-width:200px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:6px;">Relationship Score</div>
+            <div style='display:flex;align-items:center;margin:4px 0;font-size:11px;'><div style='width:12px;height:12px;border-radius:50%;background:#28a745;margin-right:8px;border:2px solid #333;'></div><b>80-100</b>: Strong</div><div style='display:flex;align-items:center;margin:4px 0;font-size:11px;'><div style='width:12px;height:12px;border-radius:50%;background:#ffc107;margin-right:8px;border:2px solid #333;'></div><b>50-79</b>: Medium</div><div style='display:flex;align-items:center;margin:4px 0;font-size:11px;'><div style='width:12px;height:12px;border-radius:50%;background:#fd7e14;margin-right:8px;border:2px solid #333;'></div><b>20-49</b>: Weak</div><div style='display:flex;align-items:center;margin:4px 0;font-size:11px;'><div style='width:12px;height:12px;border-radius:50%;background:#dc3545;margin-right:8px;border:2px solid #333;'></div><b>0-19</b>: Very weak</div><div style='display:flex;align-items:center;margin:4px 0;font-size:11px;'><div style='width:12px;height:12px;border-radius:50%;background:#6c757d;margin-right:8px;border:2px solid #333;'></div><b>None</b>: No relation</div><div style='display:flex;align-items:center;margin:4px 0;font-size:11px;'><div style='width:12px;height:12px;border-radius:50%;background:#ff7f0e;margin-right:8px;border:2px solid #333;'></div><b>Main</b>: Principal</div>
+            
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
+                <div style="font-size:11px;font-weight:600;margin-bottom:6px;">Depth (hops)</div>
+                <select id="depthSelector" onchange="updateDepthFilter()" style="width:100%;padding:4px 8px;font-size:11px;border:1px solid #ddd;border-radius:4px;cursor:pointer;background:white;">
+                    <option value="1">1 hop (direct)</option>
+                    <option value="2">2 hops</option>
+                    <option value="3">3 hops</option>
+                    <option value="all" selected>All depths</option>
+                </select>
+                <div id="depthInfo" style="margin-top:6px;font-size:10px;color:#666;line-height:1.4;">
+                    Showing: <span id="depthLabel">All</span>
+                </div>
+            </div>
+        
+            
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #eee;font-size:10px;color:#666;line-height:1.4;">
+                <b>Click a main node</b> to see its connections<br>
+                <b>Click background</b> to reset view
+            </div>
+        
+        </div><div id="mynetwork" class="card-body"></div>
+        </div>
+
+        
+        
+
+        <script type="text/javascript">
+
+              // initialize global variables.
+              var edges;
+              var nodes;
+              var allNodes;
+              var allEdges;
+              var nodeColors;
+              var originalNodes;
+              var network;
+              var container;
+              var options, data;
+              var filter = {
+                  item : '',
+                  property : '',
+                  value : []
+              };
+
+              
+
+              
+
+              // This method is responsible for drawing the graph, returns the drawn network
+              function drawGraph() {
+                  var container = document.getElementById('mynetwork');
+
+                  
+
+                  // parsing and collecting nodes and edges from the python
+                  nodes = new vis.DataSet([{"borderWidth": 3, "color": {"background": "#ff7f0e", "border": "#333", "highlight": {"background": "#ff7f0e", "border": "#000"}}, "fixed": true, "font": {"color": "#333"}, "hidden": false, "id": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045", "label": "Addr1", "shape": "box", "size": 35, "title": "Address: 0xd8da6bf26964af9d7eed9e03e53415d37aa96045\nType: MAIN\nTransactions: 0\nVolume: 0.0000 ETH\n\nRelationship Scores:\n  0xd8da6bf2...: 0.0\n  0xf8fc9a91...: 0.0\n\nClick to color connections", "x": -800, "y": 0}, {"borderWidth": 3, "color": {"background": "#ff7f0e", "border": "#333", "highlight": {"background": "#ff7f0e", "border": "#000"}}, "fixed": true, "font": {"color": "#333"}, "hidden": false, "id": "0xf8fc9a91349ebd2033d53f2b97245102f00aba96", "label": "Addr2", "shape": "box", "size": 35, "title": "Address: 0xf8fc9a91349ebd2033d53f2b97245102f00aba96\nType: MAIN\nTransactions: 0\nVolume: 0.0000 ETH\n\nRelationship Scores:\n  0xd8da6bf2...: 0.0\n  0xf8fc9a91...: 0.0\n\nClick to color connections", "x": 800, "y": 0}]);
+                  edges = new vis.DataSet([]);
+
+                  nodeColors = {};
+                  allNodes = nodes.get({ returnType: "Object" });
+                  for (nodeId in allNodes) {
+                    nodeColors[nodeId] = allNodes[nodeId].color;
+                  }
+                  allEdges = edges.get({ returnType: "Object" });
+                  // adding nodes and edges to the graph
+                  data = {nodes: nodes, edges: edges};
+
+                  var options = {"physics": {"enabled": true, "solver": "forceAtlas2Based", "forceAtlas2Based": {"gravitationalConstant": -100, "centralGravity": 0.01, "springLength": 200, "springConstant": 0.08}, "maxVelocity": 50, "minVelocity": 0.1, "timestep": 0.35, "stabilization": {"enabled": true, "iterations": 1000}}, "interaction": {"hover": true, "tooltipDelay": 100, "hideEdgesOnDrag": true, "navigationButtons": true}};
+
+                  
+
+
+                  
+
+                  network = new vis.Network(container, data, options);
+
+                  
+
+                  
+
+                  
+
+
+                  
+
+                  return network;
+
+              }
+              drawGraph();
+        </script>
+    <script>
+const nodeDataMap = {"0xd8da6bf26964af9d7eed9e03e53415d37aa96045": {"is_main": true, "relationship_scores": {"0xd8da6bf26964af9d7eed9e03e53415d37aa96045": 0.0, "0xf8fc9a91349ebd2033d53f2b97245102f00aba96": 0.0}, "tx_count": 0, "total_volume": 0.0, "color": "#ff7f0e", "distances": {"0xd8da6bf26964af9d7eed9e03e53415d37aa96045": 0, "0xf8fc9a91349ebd2033d53f2b97245102f00aba96": -1}}, "0xf8fc9a91349ebd2033d53f2b97245102f00aba96": {"is_main": true, "relationship_scores": {"0xd8da6bf26964af9d7eed9e03e53415d37aa96045": 0.0, "0xf8fc9a91349ebd2033d53f2b97245102f00aba96": 0.0}, "tx_count": 0, "total_volume": 0.0, "color": "#ff7f0e", "distances": {"0xd8da6bf26964af9d7eed9e03e53415d37aa96045": -1, "0xf8fc9a91349ebd2033d53f2b97245102f00aba96": 0}}};
+
+function getNodeData(id) {
+    return nodeDataMap[id] || {};
+}
+
+function getScoreColor(score) {
+    if (score >= 80) return '#28a745';
+    if (score >= 50) return '#ffc107';
+    if (score >= 20) return '#fd7e14';
+    if (score > 0) return '#dc3545';
+    return '#6c757d';
+}
+
+// Variable globale pour la profondeur sélectionnée
+let currentDepth = 'all';
+
+// Variable pour tracker le dernier nœud principal cliqué
+let lastSelectedMainNode = null;
+
+/**
+ * Vérifie si un nœud est visible à une certaine profondeur depuis un nœud principal.
+ * Cette fonction est utilisée pour les nœuds secondaires UNIQUEMENT.
+ * @param nodeId - L'ID du nœud à vérifier
+ * @param mainNodeId - L'ID du nœud principal de référence
+ * @param maxDepth - La profondeur max ('all' ou nombre)
+ * @returns true si le nœud doit être visible
+ */
+function isNodeVisibleAtDepth(nodeId, mainNodeId, maxDepth) {
+    // Mode "all" : tout est visible
+    if (maxDepth === 'all') return true;
+
+    const nodeData = getNodeData(nodeId);
+    if (!nodeData) return false;
+
+    const maxD = parseInt(maxDepth);
+    const distances = nodeData.distances || {};
+
+    // Si un nœud principal spécifique est sélectionné
+    if (mainNodeId) {
+        const dist = distances[mainNodeId];
+        // Distance -1 = pas de chemin, donc caché
+        if (dist === undefined || dist < 0) return false;
+        // Visible si distance <= maxDepth
+        // Note: dist 0 = le nœud principal lui-même, dist 1 = voisins directs, etc.
+        return dist <= maxD;
+    }
+
+    // Sinon (mode reset), visible si connecté à AU MOINS un nœud principal dans la limite
+    return Object.values(distances).some(d => d >= 0 && d <= maxD);
+}
+
+/**
+ * Met à jour les couleurs des nœuds connectés à un nœud principal spécifique.
+ * Les nœuds sont colorés selon leur score de relation et filtrés par profondeur.
+ * Quand un nœud principal est sélectionné, il devient le centre et les autres nœuds principaux
+ * sont traités comme des nœuds normaux (filtrés par profondeur).
+ */
+function colorConnectedNodes(mainNodeId) {
+    const nodeUpdates = [];
+    const edgeUpdates = [];
+
+    // D'abord, déterminer quels nœuds sont visibles selon la profondeur
+    const visibleNodes = new Set();
+    const allNodes = network.body.data.nodes.get();
+
+    allNodes.forEach(function(node) {
+        const nodeData = getNodeData(node.id);
+        if (!nodeData) return;
+
+        // Le nœud principal sélectionné est toujours visible
+        if (node.id === mainNodeId) {
+            visibleNodes.add(node.id);
+            return;
+        }
+
+        // Pour tous les autres nœuds (y compris les autres nœuds principaux),
+        // vérifier s'ils sont dans la profondeur définie
+        if (isNodeVisibleAtDepth(node.id, mainNodeId, currentDepth)) {
+            visibleNodes.add(node.id);
+        }
+    });
+
+    // Mettre à jour les nœuds avec les couleurs appropriées
+    allNodes.forEach(function(node) {
+        const nodeData = getNodeData(node.id);
+        if (!nodeData) return;
+
+        const isVisible = visibleNodes.has(node.id);
+
+        if (!isVisible) {
+            // Nœud hors profondeur - cacher
+            nodeUpdates.push({
+                id: node.id,
+                hidden: true
+            });
+            return;
+        }
+
+        // Nœud visible - déterminer la couleur
+        if (node.id === mainNodeId) {
+            // Nœud principal sélectionné - couleur principale
+            nodeUpdates.push({
+                id: node.id,
+                color: { background: '#ff7f0e', border: '#333' },
+                hidden: false
+            });
+        } else if (nodeData.is_main) {
+            // Autre nœud principal visible (dans la profondeur) - couleur secondaire spéciale
+            nodeUpdates.push({
+                id: node.id,
+                color: { background: '#ffaa44', border: '#333' },  // Orange plus clair
+                hidden: false
+            });
+        } else {
+            // Nœud secondaire - couleur selon le score de relation
+            const scores = nodeData.relationship_scores || {};
+            const score = scores[mainNodeId] || 0;
+            const color = score > 0 ? getScoreColor(score) : '#6c757d';
+            nodeUpdates.push({
+                id: node.id,
+                color: { background: color, border: '#333' },
+                hidden: false
+            });
+        }
+    });
+
+    // Mettre à jour les arcs - un arc est visible seulement si les deux extrémités sont visibles
+    const allEdges = network.body.data.edges.get();
+    allEdges.forEach(function(edge) {
+        const fromVisible = visibleNodes.has(edge.from);
+        const toVisible = visibleNodes.has(edge.to);
+
+        edgeUpdates.push({
+            id: edge.id,
+            hidden: !(fromVisible && toVisible)
+        });
+    });
+
+    if (nodeUpdates.length > 0) network.body.data.nodes.update(nodeUpdates);
+    if (edgeUpdates.length > 0) network.body.data.edges.update(edgeUpdates);
+}
+
+/**
+ * Réinitialise les couleurs et affiche tous les nœuds selon la profondeur actuelle.
+ * En mode reset : tous les nœuds principaux sont visibles, les secondaires sont filtrés par profondeur.
+ */
+function resetNodeColors() {
+    const nodeUpdates = [];
+    const edgeUpdates = [];
+
+    // D'abord, déterminer quels nœuds sont visibles
+    const visibleNodes = new Set();
+    const allNodes = network.body.data.nodes.get();
+
+    allNodes.forEach(function(node) {
+        const data = getNodeData(node.id);
+        if (!data) return;
+
+        // Tous les nœuds principaux sont toujours visibles en mode reset
+        if (data.is_main) {
+            visibleNodes.add(node.id);
+            return;
+        }
+
+        // Pour les nœuds secondaires, vérifier la profondeur (depuis n'importe quel main)
+        if (isNodeVisibleAtDepth(node.id, null, currentDepth)) {
+            visibleNodes.add(node.id);
+        }
+    });
+
+    // Mettre à jour les nœuds
+    allNodes.forEach(function(node) {
+        const data = getNodeData(node.id);
+        if (!data) return;
+
+        const isVisible = visibleNodes.has(node.id);
+
+        if (data.is_main) {
+            // Nœuds principaux - toujours visibles avec leur couleur
+            nodeUpdates.push({
+                id: node.id,
+                color: { background: '#ff7f0e', border: '#333' },
+                hidden: false
+            });
+        } else {
+            // Nœuds secondaires - gris si visible, caché sinon
+            nodeUpdates.push({
+                id: node.id,
+                color: { background: '#6c757d', border: '#666' },
+                hidden: !isVisible
+            });
+        }
+    });
+
+    // Mettre à jour les arcs selon la visibilité des nœuds
+    const allEdges = network.body.data.edges.get();
+    allEdges.forEach(function(edge) {
+        const fromVisible = visibleNodes.has(edge.from);
+        const toVisible = visibleNodes.has(edge.to);
+
+        edgeUpdates.push({
+            id: edge.id,
+            hidden: !(fromVisible && toVisible)
+        });
+    });
+
+    network.body.data.nodes.update(nodeUpdates);
+    network.body.data.edges.update(edgeUpdates);
+
+    // Forcer le redessin
+    network.redraw();
+}
+
+function showToast(msg, type) {
+    const t = document.createElement('div');
+    t.style.cssText = 'position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:6px;' +
+        'font-family:system-ui,sans-serif;font-size:13px;font-weight:500;z-index:10000;' +
+        'box-shadow:0 4px 12px rgba(0,0,0,0.15);' +
+        (type === 'success' ? 'background:#d4edda;color:#155724;border:1px solid #c3e6cb;' :
+                              'background:#d1ecf1;color:#0c5460;border:1px solid #bee5eb;');
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function() { t.remove(); }, 2500);
+}
+
+/**
+ * Fonction appelée quand on change la profondeur dans le sélecteur.
+ */
+function updateDepthFilter() {
+    const selector = document.getElementById('depthSelector');
+    if (selector) {
+        currentDepth = selector.value;
+
+        // Mettre à jour le label affichant la profondeur actuelle
+        const depthLabel = document.getElementById('depthLabel');
+        if (depthLabel) {
+            depthLabel.textContent = currentDepth === 'all' ? 'All' : currentDepth + ' hop(s)';
+        }
+
+        // Si un nœud principal est sélectionné, rafraîchir l'affichage avec ce nœud
+        if (lastSelectedMainNode) {
+            colorConnectedNodes(lastSelectedMainNode);
+        } else {
+            resetNodeColors();
+        }
+    }
+}
+
+// Event handlers
+network.on("click", function(params) {
+    if (params.nodes.length > 0) {
+        const nodeId = params.nodes[0];
+        const nodeData = getNodeData(nodeId);
+        if (nodeData && nodeData.is_main) {
+            // Si on clique sur un nœud principal, colorer selon ce nœud
+            if (lastSelectedMainNode !== nodeId) {
+                lastSelectedMainNode = nodeId;
+                colorConnectedNodes(nodeId);
+                showToast("Colored by: " + nodeId.slice(0, 10) + "...", "success");
+            }
+        }
+    } else if (params.nodes.length === 0 && params.edges.length === 0) {
+        // Reset seulement si on clique sur le fond (pas sur une arête)
+        if (lastSelectedMainNode) {
+            lastSelectedMainNode = null;
+            resetNodeColors();
+            showToast("View reset", "info");
+        }
+    }
+});
+
+network.on("hoverNode", function() { document.body.style.cursor = 'pointer'; });
+network.on("blurNode", function() { document.body.style.cursor = 'default'; });
+
+// Fit all nodes after stabilization
+network.once("stabilizationIterationsDone", function() {
+    network.fit({
+        animation: { duration: 500, easingFunction: 'easeInOutQuad' }
+    });
+});
+</script></body>
+</html>

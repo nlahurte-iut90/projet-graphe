@@ -1,31 +1,26 @@
 import networkx as nx
+import matplotlib
+matplotlib.use('tkAgg')
 import matplotlib.pyplot as plt
-from src.domain.models import Address, CorrelationResult
+from src.domain.models import Address, CorrelationResult, RelationshipScore, AddressRelationshipTable, PathInfo
 from src.adapters.dune import DuneAdapter
 import pandas as pd
+import math
+from typing import Tuple, List, Optional, Dict, Set
+from datetime import datetime
+
+from src.services.interactive_viz import InteractiveGraphVisualizer
 
 class CorrelationService:
     def __init__(self, dune_adapter: DuneAdapter):
         self.dune_adapter = dune_adapter
         self.graph = nx.MultiDiGraph()
 
-    def build_graph(self, address1: Address, address2: Address):
-        """
-        Fetch data and build the graph around the two addresses.
-        """
-        # 1. Init main nodes
-        self.graph.add_node(address1.address, type='main', label='Address 1')
-        self.graph.add_node(address2.address, type='main', label='Address 2')
-
-        # 2. Fetch data (limit per address handled in adapter query)
-        # We assume address is a string in Address object
-        df = self.dune_adapter.get_transactions(address1.address, address2.address, limit=5)
-        
+    def _add_transactions_to_graph(self, df: pd.DataFrame):
+        """Helper pour ajouter un DataFrame de transactions au graphe."""
         if df.empty:
-            print("No transactions found.")
             return
 
-        # 3. Iterate and build graph
         for _, row in df.iterrows():
             sender = str(row['from']).strip().lower()
             receiver = str(row['to']).strip().lower()
@@ -35,32 +30,99 @@ class CorrelationService:
 
             tx_hash = row.get('hash', 'unknown')
             value = float(row['value_eth'])
+            value_wei = int(row.get('value_wei', value * 1e18))
             timestamp = row.get('block_time', 'unknown')
-            
-            # Avoid self-transactions if deemed irrelevant (or keep them)
-            # The user said "code doesn't support" it. 
-            # If sender == receiver, we add a self-loop.
-            
-            # To prevent double addition (if transaction is between addr1 and addr2),
-            # we track processed hashes or handle logic carefully.
-            # But simpler: Just add the edge based on raw data.
-            # We must ensure we don't add it twice because of the "Case A / Case B" if blocks.
-            
-            added = False
-            
-            # Interaction involving Address 1
-            if sender == address1.address or receiver == address1.address:
-                # Ensure nodes exist
-                self.graph.add_node(sender)
-                self.graph.add_node(receiver)
-                self.graph.add_edge(sender, receiver, weight=value, hash=tx_hash, time=timestamp)
-                added = True
-            
-            # Interaction involving Address 2 (only if not already added by Address 1 block)
-            if not added and (sender == address2.address or receiver == address2.address):
-                self.graph.add_node(sender)
-                self.graph.add_node(receiver)
-                self.graph.add_edge(sender, receiver, weight=value, hash=tx_hash, time=timestamp)
+
+            self.graph.add_node(sender)
+            self.graph.add_node(receiver)
+            self.graph.add_edge(sender, receiver, weight=value, weight_wei=value_wei, hash=tx_hash, time=timestamp)
+
+    def _select_expansion_candidates(
+        self,
+        table1: AddressRelationshipTable,
+        table2: AddressRelationshipTable,
+        top_n: int,
+        visited: Set[str]
+    ) -> List[Address]:
+        """
+        Sélectionne les top_n meilleurs candidats non visités pour l'expansion.
+
+        Combine les relationships des deux tables et sélectionne les meilleurs scores.
+        """
+        candidates = {}
+
+        # Get top relationships from both tables (with margin for filtering)
+        rels1 = table1.get_top_relationships(top_n * 2)
+        rels2 = table2.get_top_relationships(top_n * 2)
+
+        # Merge and deduplicate, keeping best score
+        for rel in rels1 + rels2:
+            addr = rel.target.address
+            if addr not in visited:
+                if addr not in candidates or rel.total_score > candidates[addr][1]:
+                    candidates[addr] = (Address(addr), rel.total_score)
+
+        # Sort by score and return top_n
+        sorted_candidates = sorted(candidates.values(), key=lambda x: x[1], reverse=True)
+        return [addr for addr, _ in sorted_candidates[:top_n]]
+
+    def build_graph(
+        self,
+        address1: Address,
+        address2: Address,
+        expansion_depth: int = 1,
+        top_n: int = 5
+    ):
+        """
+        Construit le graphe avec expansion récursive optionnelle.
+
+        Args:
+            address1: Première adresse principale
+            address2: Deuxième adresse principale
+            expansion_depth: Nombre d'itérations d'expansion (1 = juste les 2 adresses principales)
+            top_n: Nombre de nœuds à sélectionner par itération d'expansion
+        """
+        # Clear the graph to avoid duplicating edges when build_graph is called multiple times
+        self.graph.clear()
+
+        # 1. Init main nodes
+        self.graph.add_node(address1.address, type='main', label='Address 1')
+        self.graph.add_node(address2.address, type='main', label='Address 2')
+
+        # Track visited addresses to avoid cycles
+        visited = {address1.address, address2.address}
+        current_level = [address1, address2]
+
+        print(f"\n[Expansion] Depth={expansion_depth}, Top_N={top_n}")
+        print(f"[Expansion] Starting with {len(current_level)} main addresses")
+
+        for depth in range(expansion_depth):
+            print(f"\n[Expansion] Level {depth + 1}/{expansion_depth}")
+            print(f"[Expansion] Processing {len(current_level)} addresses...")
+
+            # Fetch transactions for current level
+            for addr in current_level:
+                df = self.dune_adapter.get_transactions_for_address(addr.address, limit=5)
+                self._add_transactions_to_graph(df)
+
+            # Prepare next level (if not last iteration)
+            if depth < expansion_depth - 1:
+                # Calculate scores to find best candidates
+                table1 = self.calculate_relationship_scores(address1)
+                table2 = self.calculate_relationship_scores(address2)
+
+                # Select top candidates
+                candidates = self._select_expansion_candidates(table1, table2, top_n, visited)
+
+                if not candidates:
+                    print(f"[Expansion] No new candidates found, stopping expansion early")
+                    break
+
+                current_level = candidates
+                visited.update(a.address for a in candidates)
+                print(f"[Expansion] Selected {len(current_level)} new addresses for next level")
+
+        print(f"\n[Expansion] Graph built: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
 
 
     def visualize_graph(self, address1: Address, address2: Address):
@@ -246,24 +308,270 @@ class CorrelationService:
         plt.axis('off')
         plt.show()
 
-    def calculate_score(self, address1: Address, address2: Address) -> CorrelationResult:
-        # 1. Build Graph
-        self.build_graph(address1, address2)
-        
-        # 2. Analyze Graph
+    def _get_transaction_metrics(self, addr1: str, addr2: str) -> Optional[dict]:
+        """Extract transaction metrics between two addresses from the graph.
+
+        Checks for edges in both directions (addr1->addr2 and addr2->addr1)
+        since transactions can flow either way.
+        """
+        # Get edges in both directions
+        edges_forward = self.graph.get_edge_data(addr1, addr2, default={})
+        edges_backward = self.graph.get_edge_data(addr2, addr1, default={})
+
+        # Combine all edge data
+        all_edges = list(edges_forward.values()) + list(edges_backward.values())
+
+        if not all_edges:
+            return None
+
+        values = [data['weight'] for data in all_edges]
+        values_wei = [data.get('weight_wei', 0) for data in all_edges]
+        timestamps = [data.get('time') for data in all_edges if data.get('time')]
+
+        return {
+            'tx_count': len(values),
+            'total_volume': sum(values),
+            'total_volume_wei': sum(values_wei),
+            'avg_value': sum(values) / len(values) if values else 0,
+            'max_value': max(values) if values else 0,
+            'min_value': min(values) if values else 0,
+            'timestamps': timestamps
+        }
+
+    def _calculate_recency_score(self, timestamps: List) -> float:
+        """Calculate recency score based on transaction timestamps.
+        More recent transactions get higher scores."""
+        if not timestamps:
+            return 0.5  # Neutral score if no timestamps
+
+        try:
+            # Convert to datetime objects if needed
+            dates = []
+            for ts in timestamps:
+                if isinstance(ts, str):
+                    try:
+                        dates.append(pd.to_datetime(ts))
+                    except:
+                        continue
+                elif isinstance(ts, datetime):
+                    dates.append(ts)
+
+            if not dates:
+                return 0.5
+
+            # Calculate average days since transactions
+            now = datetime.now()
+            days_ago = [(now - d).days for d in dates]
+            avg_days = sum(days_ago) / len(days_ago)
+
+            # Score: 1.0 for today, decreasing to 0.0 for transactions > 1 year ago
+            score = max(0.0, 1.0 - (avg_days / 365))
+            return score
+        except Exception:
+            return 0.5
+
+    def _calculate_direct_score(self, addr1: Address, addr2: Address) -> Tuple[float, dict]:
+        """Calculate direct relationship score based on transactions."""
+        metrics = self._get_transaction_metrics(addr1.address, addr2.address)
+
+        if not metrics:
+            return 0.0, {}
+
+        # Volume score: log scale to handle extreme values, capped at 1.0
+        # Assuming 1000 ETH as max reference for full score
+        volume_score = min(math.log10(metrics['total_volume'] + 1) / 3, 1.0)
+
+        # Frequency score: capped at 10 transactions for full score
+        freq_score = min(metrics['tx_count'] / 10, 1.0)
+
+        # Recency score: based on how recent transactions are
+        recency_score = self._calculate_recency_score(metrics['timestamps'])
+
+        # Weighted combination: volume is most important, then frequency, then recency
+        total = (0.5 * volume_score + 0.3 * freq_score + 0.2 * recency_score) * 100
+
+        return total, metrics
+
+    def _calculate_indirect_score(self, addr1: Address, addr2: Address, max_depth: int = 3) -> Tuple[float, List[PathInfo]]:
+        """Calculate indirect relationship score via intermediate nodes."""
+        paths = []
+        total_score = 0.0
+
+        try:
+            # Find all simple paths up to max_depth
+            for path in nx.all_simple_paths(self.graph, addr1.address, addr2.address, cutoff=max_depth):
+                if len(path) <= 2:  # Skip direct path (already counted)
+                    continue
+
+                # Calculate path score
+                path_score = 1.0
+                decay = 0.5 ** (len(path) - 2)  # Decay factor per hop
+
+                # Multiply scores for each edge in the path
+                for i in range(len(path) - 1):
+                    edge_metrics = self._get_transaction_metrics(path[i], path[i+1])
+                    if edge_metrics:
+                        edge_score = min(math.log10(edge_metrics['total_volume'] + 1) / 3, 1.0)
+                        path_score *= edge_score
+                    else:
+                        path_score *= 0.1  # Small penalty for edges without data
+
+                path_score *= decay * 100
+                total_score += path_score
+
+                paths.append(PathInfo(
+                    nodes=[Address(a) for a in path],
+                    score=path_score,
+                    depth=len(path) - 1
+                ))
+        except nx.NetworkXNoPath:
+            pass
+
+        # Also check reverse direction
+        try:
+            for path in nx.all_simple_paths(self.graph, addr2.address, addr1.address, cutoff=max_depth):
+                if len(path) <= 2:
+                    continue
+
+                path_score = 1.0
+                decay = 0.5 ** (len(path) - 2)
+
+                for i in range(len(path) - 1):
+                    edge_metrics = self._get_transaction_metrics(path[i], path[i+1])
+                    if edge_metrics:
+                        edge_score = min(math.log10(edge_metrics['total_volume'] + 1) / 3, 1.0)
+                        path_score *= edge_score
+                    else:
+                        path_score *= 0.1
+
+                path_score *= decay * 100
+                total_score += path_score
+
+                paths.append(PathInfo(
+                    nodes=[Address(a) for a in reversed(path)],
+                    score=path_score,
+                    depth=len(path) - 1
+                ))
+        except nx.NetworkXNoPath:
+            pass
+
+        return min(total_score, 100.0), paths
+
+    def calculate_relationship_scores(self, main_address: Address) -> AddressRelationshipTable:
+        """Generate relationship score table for a main address."""
+        relationships = {}
+
+        # Get all nodes in the graph
+        connected_nodes = set(self.graph.nodes())
+
+        for node_address in connected_nodes:
+            if node_address == main_address.address:
+                continue
+
+            target = Address(node_address)
+
+            # Calculate direct and indirect scores
+            direct_score, direct_metrics = self._calculate_direct_score(main_address, target)
+            indirect_score, indirect_paths = self._calculate_indirect_score(main_address, target)
+
+            # Total score is the maximum of both (they represent different relationship types)
+            total_score = max(direct_score, indirect_score)
+
+            relationships[node_address] = RelationshipScore(
+                source=main_address,
+                target=target,
+                direct_score=direct_score,
+                indirect_score=indirect_score,
+                total_score=total_score,
+                metrics={
+                    **direct_metrics,
+                    'indirect_paths': indirect_paths
+                }
+            )
+
+        return AddressRelationshipTable(
+            main_address=main_address,
+            relationships=relationships
+        )
+
+    def calculate_score(
+        self,
+        address1: Address,
+        address2: Address,
+        expansion_depth: int = 1,
+        top_n: int = 5
+    ) -> CorrelationResult:
+        """
+        Calculate correlation score between two addresses with optional graph expansion.
+
+        Args:
+            address1: First main address
+            address2: Second main address
+            expansion_depth: Number of expansion iterations (1 = no expansion)
+            top_n: Number of top correlated nodes to expand per iteration
+        """
+        # 1. Build Graph with expansion
+        self.build_graph(address1, address2, expansion_depth=expansion_depth, top_n=top_n)
+
+        # 2. Calculate relationship scores
+        table = self.calculate_relationship_scores(address1)
+        relationship = table.get_relationship(address2)
+
+        # 3. Analyze Graph
         num_nodes = self.graph.number_of_nodes()
         num_edges = self.graph.number_of_edges()
         has_path = nx.has_path(self.graph, address1.address, address2.address) or nx.has_path(self.graph, address2.address, address1.address)
 
-        # 3. Return Result
+        # 4. Return Result with actual score
+        score = relationship.total_score if relationship else 0.0
+
         return CorrelationResult(
             source=address1,
             target=address2,
-            score=0.0, # Placeholder
+            score=score,
+            path=[address1, address2] if relationship else [],
             details={
                 "nodes": num_nodes,
                 "edges": num_edges,
-                "notes": "Graph built successfully",
-                "has_path": has_path
-            } 
+                "notes": f"Graph built with expansion_depth={expansion_depth}, top_n={top_n}",
+                "has_path": has_path,
+                "direct_score": relationship.direct_score if relationship else 0.0,
+                "indirect_score": relationship.indirect_score if relationship else 0.0,
+                "tx_count": relationship.metrics.get('tx_count', 0) if relationship else 0,
+                "total_volume": relationship.metrics.get('total_volume', 0) if relationship else 0,
+                "expansion_depth": expansion_depth,
+                "top_n": top_n,
+            }
+        )
+
+    def visualize_interactive(
+        self,
+        address1: Address,
+        address2: Address,
+        tables: Optional[List[AddressRelationshipTable]] = None,
+        auto_open: bool = True
+    ) -> str:
+        """Crée une visualisation HTML interactive du graphe.
+
+        Args:
+            address1: Première adresse principale
+            address2: Deuxième adresse principale
+            tables: Tables de relation pour enrichir les scores (optionnel)
+            auto_open: Si True, ouvre le fichier dans le navigateur
+
+        Returns:
+            Chemin du fichier HTML généré
+        """
+        if self.graph.number_of_nodes() == 0:
+            self.build_graph(address1, address2)
+
+        visualizer = InteractiveGraphVisualizer()
+        if tables:
+            visualizer.set_relationship_tables(tables)
+
+        return visualizer.visualize(
+            graph=self.graph,
+            main_addresses=[address1, address2],
+            title=f"Ethereum Correlation: {address1.address[:10]}... vs {address2.address[:10]}...",
+            auto_open=auto_open
         )

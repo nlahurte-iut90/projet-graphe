@@ -1,0 +1,51 @@
+{
+  "timestamp": "20260303_144857",
+  "tables": [
+    {
+      "main_address": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+      "relationships": [
+        {
+          "source": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+          "target": "0xf8fc9a91349ebd2033d53f2b97245102f00aba96",
+          "direct_score": 0.0,
+          "indirect_score": 0.0,
+          "total_score": 0.0,
+          "metrics": {}
+        }
+      ],
+      "top_relationships": [
+        {
+          "source": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+          "target": "0xf8fc9a91349ebd2033d53f2b97245102f00aba96",
+          "direct_score": 0.0,
+          "indirect_score": 0.0,
+          "total_score": 0.0,
+          "metrics": {}
+        }
+      ]
+    },
+    {
+      "main_address": "0xf8fc9a91349ebd2033d53f2b97245102f00aba96",
+      "relationships": [
+        {
+          "source": "0xf8fc9a91349ebd2033d53f2b97245102f00aba96",
+          "target": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+          "direct_score": 0.0,
+          "indirect_score": 0.0,
+          "total_score": 0.0,
+          "metrics": {}
+        }
+      ],
+      "top_relationships": [
+        {
+          "source": "0xf8fc9a91349ebd2033d53f2b97245102f00aba96",
+          "target": "0xd8da6bf26964af9d7eed9e03e53415d37aa96045",
+          "direct_score": 0.0,
+          "indirect_score": 0.0,
+          "total_score": 0.0,
+          "metrics": {}
+        }
+      ]
+    }
+  ]
+}

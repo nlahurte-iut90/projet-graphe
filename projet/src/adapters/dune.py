@@ -60,3 +60,34 @@ class DuneAdapter:
             print(f"Erreur Dune: {e}")
             # Retourner un DF vide en cas d'erreur pour ne pas crasher
             return pd.DataFrame()
+
+    def get_transactions_for_address(self, address: str, limit: int = 5) -> pd.DataFrame:
+        """Récupère les transactions pour une adresse spécifique (entrantes et sortantes)."""
+        if not self.client:
+            raise ValueError("Dune Client not initialized. Check API Key.")
+
+        print(f"Fetching transactions for {address}...")
+
+        query_sql = f"""
+            SELECT "from", "to", (value/1e18) AS value_eth, value AS value_wei, hash, block_time
+            FROM ethereum.transactions
+            WHERE ("from" = {address} OR "to" = {address} )
+            ORDER BY block_time DESC
+            LIMIT {limit}
+        """
+
+        cached_df = self.cache.get(query_sql)
+        if cached_df is not None:
+            return cached_df
+
+        try:
+            results = self.client.run_sql(query_sql=query_sql)
+            if results and results.result and results.result.rows:
+                df = pd.DataFrame(results.result.rows)
+                df = df.drop_duplicates(subset=['hash'])
+                self.cache.save(query_sql, df)
+                return df
+            return pd.DataFrame()
+        except Exception as e:
+            print(f"Erreur Dune pour {address}: {e}")
+            return pd.DataFrame()

@@ -1,0 +1,759 @@
+"""Visualisation interactive des graphes de corrélation Ethereum avec Pyvis."""
+import math
+import json
+import html
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Any
+
+import networkx as nx
+from pyvis.network import Network
+
+from src.domain.models import Address, AddressRelationshipTable
+
+
+class InteractiveGraphVisualizer:
+    """Crée des visualisations interactives HTML du graphe de corrélation."""
+
+    SCORE_COLORS = {
+        "high": "#28a745",
+        "medium": "#ffc107",
+        "low": "#fd7e14",
+        "very_low": "#dc3545",
+        "none": "#6c757d",
+    }
+
+    MAIN_NODE_COLOR = "#ff7f0e"
+    DEFAULT_EDGE_COLOR = "#666666"
+    HIGHLIGHT_EDGE_COLOR = "#ff7f0e"
+
+    def __init__(self, output_dir: str = "output"):
+        self.base_output_dir = Path(output_dir)
+        self.base_output_dir.mkdir(exist_ok=True)
+        self.output_dir: Optional[Path] = None  # Sera défini à chaque visualize()
+        self.tables: Dict[str, AddressRelationshipTable] = {}
+
+    def set_relationship_tables(self, tables: List[AddressRelationshipTable]):
+        """Configure les tables de relation."""
+        for table in tables:
+            self.tables[table.main_address.address] = table
+
+    def _get_score_color(self, score: float) -> str:
+        """Retourne la couleur selon le score."""
+        if score >= 80:
+            return self.SCORE_COLORS["high"]
+        elif score >= 50:
+            return self.SCORE_COLORS["medium"]
+        elif score >= 20:
+            return self.SCORE_COLORS["low"]
+        elif score > 0:
+            return self.SCORE_COLORS["very_low"]
+        return self.SCORE_COLORS["none"]
+
+    def _build_node_tooltip(
+        self,
+        node_id: str,
+        is_main: bool,
+        tx_count: int,
+        total_volume: float,
+        relationship_scores: Dict[str, float],
+        main_addresses: List[Address]
+    ) -> str:
+        """Construit le tooltip pour un nœud - format simple texte."""
+        lines = [
+            f"Address: {node_id}",
+            f"Type: {'MAIN' if is_main else 'CONNECTED'}",
+            f"Transactions: {tx_count}",
+            f"Volume: {total_volume:.4f} ETH",
+            "",
+            "Relationship Scores:",
+        ]
+
+        for main_addr in main_addresses:
+            score = relationship_scores.get(main_addr.address, 0)
+            short = f"{main_addr.address[:10]}..."
+            lines.append(f"  {short}: {score:.1f}")
+
+        if is_main:
+            lines.append("")
+            lines.append("Click to color connections")
+
+        return "\n".join(lines)
+
+    def _build_edge_tooltip(self, tx_hash: str, value: float, value_wei: int, timestamp: str) -> str:
+        """Construit le tooltip pour une transaction."""
+        return f"""Transaction
+Hash: {tx_hash}
+Value: {value:.6f} ETH
+Wei: {value_wei:,}
+Time: {timestamp}"""
+
+    def _build_node_data(self, graph: nx.MultiDiGraph, main_addresses: List[Address]) -> Tuple[List[Dict], Dict]:
+        """Extrait les données des nœuds avec calcul correct des distances (profondeur)."""
+        nodes = []
+        nodes_js_data = {}
+        main_addrs = {a.address for a in main_addresses}
+
+        # Pré-calculer toutes les distances depuis chaque nœud principal
+        # distances_from_main[main_addr][node_id] = distance en nombre de sauts
+        # On utilise le graphe non orienté pour calculer les distances de connexion
+        distances_from_main = {}
+        undirected_graph = graph.to_undirected()
+        for main_addr in main_addresses:
+            # Distance 0 pour le nœud principal lui-même
+            distances = {main_addr.address: 0}
+            # BFS sur le graphe non orienté pour trouver toutes les distances
+            # Cela compte le nombre de sauts peu importe la direction des transactions
+            for target, dist in nx.single_source_shortest_path_length(undirected_graph, main_addr.address).items():
+                distances[target] = dist
+            distances_from_main[main_addr.address] = distances
+
+        for node_id in graph.nodes():
+            is_main = node_id in main_addrs
+
+            # Métriques
+            tx_count = 0
+            total_volume = 0.0
+            in_edges = list(graph.in_edges(node_id, data=True))
+            out_edges = list(graph.out_edges(node_id, data=True))
+            for _, _, data in in_edges:
+                total_volume += data.get('weight', 0)
+                tx_count += 1
+            for _, _, data in out_edges:
+                total_volume += data.get('weight', 0)
+                tx_count += 1
+
+            # Scores - pour chaque nœud, stocker le score de relation avec chaque adresse principale
+            relationship_scores = {}
+            for main_addr in main_addresses:
+                score = 0.0
+                if main_addr.address in self.tables:
+                    table = self.tables[main_addr.address]
+                    rel = table.get_relationship(Address(node_id))
+                    if rel:
+                        score = rel.total_score
+                relationship_scores[main_addr.address] = score
+
+            # Couleur - par défaut tous les nœuds secondaires sont gris
+            if is_main:
+                color = self.MAIN_NODE_COLOR
+            else:
+                color = self.SCORE_COLORS["none"]
+
+            # Label
+            if is_main:
+                idx = list(main_addrs).index(node_id)
+                label = f"Addr{idx + 1}"
+            else:
+                label = f"{node_id[:6]}...{node_id[-4:]}"
+
+            # Tooltip simple (texte seul)
+            title = self._build_node_tooltip(
+                node_id, is_main, tx_count, total_volume,
+                relationship_scores, main_addresses
+            )
+
+            nodes.append({
+                'id': node_id,
+                'label': label,
+                'title': title,
+                'color': {
+                    'background': color,
+                    'border': '#333' if is_main else '#666',
+                    'highlight': {'background': color, 'border': '#000'}
+                },
+                'size': 35 if is_main else 20,
+                'shape': 'box' if is_main else 'dot',
+                'font': {'size': 14, 'color': '#ffffff' if is_main else '#333333', 'face': 'monospace'},
+                'borderWidth': 3 if is_main else 2,
+            })
+
+            # Construire le dictionnaire des distances pour ce nœud
+            node_distances = {}
+            for main_addr in main_addresses:
+                dist_map = distances_from_main.get(main_addr.address, {})
+                node_distances[main_addr.address] = dist_map.get(node_id, -1)
+
+            nodes_js_data[node_id] = {
+                'is_main': is_main,
+                'relationship_scores': relationship_scores,
+                'tx_count': tx_count,
+                'total_volume': total_volume,
+                'color': color,
+                'distances': node_distances
+            }
+
+        return nodes, nodes_js_data
+
+    def _build_edge_data(self, graph: nx.MultiDiGraph) -> List[Dict]:
+        """Extrait les données des arcs."""
+        edges = []
+
+        edge_groups = {}
+        for u, v, k, data in graph.edges(data=True, keys=True):
+            key = (u, v)
+            if key not in edge_groups:
+                edge_groups[key] = []
+            edge_groups[key].append((k, data))
+
+        for (u, v), edge_list in edge_groups.items():
+            total = len(edge_list)
+            for idx, (key, data) in enumerate(edge_list):
+                tx_hash = str(data.get('hash', 'unknown'))
+                value = float(data.get('weight', 0))
+                value_wei = int(data.get('weight_wei', value * 1e18))
+                timestamp = data.get('time', 'unknown')
+                if isinstance(timestamp, datetime):
+                    timestamp = timestamp.strftime('%Y-%m-%d %H:%M')
+
+                roundness = 0.2 * idx if total > 1 else 0
+                width = 2 + min(value / 3, 4)
+
+                title = self._build_edge_tooltip(tx_hash, value, value_wei, str(timestamp))
+
+                edges.append({
+                    'from': u,
+                    'to': v,
+                    'width': width,
+                    'title': title,
+                    'color': {'color': self.DEFAULT_EDGE_COLOR, 'highlight': self.HIGHLIGHT_EDGE_COLOR},
+                    'arrows': {'to': {'enabled': True, 'scaleFactor': 0.7}},
+                    'smooth': {'type': 'continuous' if roundness == 0 else 'curvedCW', 'roundness': roundness}
+                })
+
+        return edges
+
+    def _calculate_positions(
+        self,
+        graph: nx.MultiDiGraph,
+        main_addresses: List[Address]
+    ) -> Dict[str, Tuple[int, int]]:
+        """Calcule les positions des nœuds pour un layout en étoile."""
+        positions = {}
+        if len(main_addresses) < 1:
+            return positions
+
+        # Positions - adresses principales aux EXTRÉMITÉS gauche et droite
+        # Utiliser une largeur importante pour les placer aux bords
+        screen_half_width = 800  # Demi-largeur de la zone de visualisation
+
+        # Adresses principales positionnées aux extrémités gauche et droite
+        positions[main_addresses[0].address] = (-screen_half_width, 0)
+        if len(main_addresses) > 1:
+            positions[main_addresses[1].address] = (screen_half_width, 0)
+
+        addr1 = main_addresses[0].address
+        addr2 = main_addresses[1].address if len(main_addresses) > 1 else None
+
+        # Récupérer tous les voisins
+        neighbors1 = set(graph.successors(addr1)) | set(graph.predecessors(addr1))
+        neighbors2 = set(graph.successors(addr2)) | set(graph.predecessors(addr2)) if addr2 else set()
+        neighbors1.discard(addr1)
+        neighbors1.discard(addr2)
+        neighbors2.discard(addr1)
+        neighbors2.discard(addr2)
+
+        common = neighbors1 & neighbors2
+        unique1 = neighbors1 - common
+        unique2 = neighbors2 - common
+
+        radius_neighbors = 500
+
+        # Voisins uniques d'addr1 - à gauche en arc
+        unique1_list = sorted(list(unique1))
+        n1 = len(unique1_list)
+        if n1 > 0:
+            # Arc de 120° à 240° (gauche)
+            start_ang = 2 * math.pi / 3
+            end_ang = 4 * math.pi / 3
+            step = (end_ang - start_ang) / max(n1, 1)
+            for i, node in enumerate(unique1_list):
+                ang = start_ang + i * step + step/2
+                positions[node] = (int(radius_neighbors * math.cos(ang)), int(radius_neighbors * math.sin(ang)))
+
+        # Voisins uniques d'addr2 - à droite en arc
+        unique2_list = sorted(list(unique2))
+        n2 = len(unique2_list)
+        if n2 > 0:
+            # Arc de -60° à 60° (droite)
+            start_ang = -math.pi / 3
+            end_ang = math.pi / 3
+            step = (end_ang - start_ang) / max(n2, 1)
+            for i, node in enumerate(unique2_list):
+                ang = start_ang + i * step + step/2
+                positions[node] = (int(radius_neighbors * math.cos(ang)), int(radius_neighbors * math.sin(ang)))
+
+        # Voisins communs - en bas
+        common_list = sorted(list(common))
+        n_common = len(common_list)
+        if n_common > 0:
+            # Arc de 200° à 340° (bas)
+            start_ang = 5 * math.pi / 4
+            end_ang = 7 * math.pi / 4
+            step = (end_ang - start_ang) / max(n_common, 1)
+            for i, node in enumerate(common_list):
+                ang = start_ang + i * step + step/2
+                positions[node] = (int(radius_neighbors * math.cos(ang)), int(radius_neighbors * math.sin(ang)))
+
+        # Nœuds restants (ne devraient pas y en avoir avec ce layout)
+        remaining = set(graph.nodes()) - set(positions.keys())
+        if remaining:
+            n_rem = len(remaining)
+            for i, node in enumerate(sorted(list(remaining))):
+                ang = 2 * math.pi * i / n_rem
+                positions[node] = (int(600 * math.cos(ang)), int(600 * math.sin(ang)))
+
+        return positions
+
+    def _get_custom_js(self, nodes_js_data: Dict) -> str:
+        """Génère le JavaScript pour les interactions avec le système de profondeur corrigé."""
+        nodes_json = json.dumps(nodes_js_data)
+
+        return f"""
+const nodeDataMap = {nodes_json};
+
+function getNodeData(id) {{
+    return nodeDataMap[id] || {{}};
+}}
+
+function getScoreColor(score) {{
+    if (score >= 80) return '{self.SCORE_COLORS["high"]}';
+    if (score >= 50) return '{self.SCORE_COLORS["medium"]}';
+    if (score >= 20) return '{self.SCORE_COLORS["low"]}';
+    if (score > 0) return '{self.SCORE_COLORS["very_low"]}';
+    return '{self.SCORE_COLORS["none"]}';
+}}
+
+// Variable globale pour la profondeur sélectionnée
+let currentDepth = 'all';
+
+// Variable pour tracker le dernier nœud principal cliqué
+let lastSelectedMainNode = null;
+
+/**
+ * Vérifie si un nœud est visible à une certaine profondeur depuis un nœud principal.
+ * Cette fonction est utilisée pour les nœuds secondaires UNIQUEMENT.
+ * @param nodeId - L'ID du nœud à vérifier
+ * @param mainNodeId - L'ID du nœud principal de référence
+ * @param maxDepth - La profondeur max ('all' ou nombre)
+ * @returns true si le nœud doit être visible
+ */
+function isNodeVisibleAtDepth(nodeId, mainNodeId, maxDepth) {{
+    // Mode "all" : tout est visible
+    if (maxDepth === 'all') return true;
+
+    const nodeData = getNodeData(nodeId);
+    if (!nodeData) return false;
+
+    const maxD = parseInt(maxDepth);
+    const distances = nodeData.distances || {{}};
+
+    // Si un nœud principal spécifique est sélectionné
+    if (mainNodeId) {{
+        const dist = distances[mainNodeId];
+        // Distance -1 = pas de chemin, donc caché
+        if (dist === undefined || dist < 0) return false;
+        // Visible si distance <= maxDepth
+        // Note: dist 0 = le nœud principal lui-même, dist 1 = voisins directs, etc.
+        return dist <= maxD;
+    }}
+
+    // Sinon (mode reset), visible si connecté à AU MOINS un nœud principal dans la limite
+    return Object.values(distances).some(d => d >= 0 && d <= maxD);
+}}
+
+/**
+ * Met à jour les couleurs des nœuds connectés à un nœud principal spécifique.
+ * Les nœuds sont colorés selon leur score de relation et filtrés par profondeur.
+ * Quand un nœud principal est sélectionné, il devient le centre et les autres nœuds principaux
+ * sont traités comme des nœuds normaux (filtrés par profondeur).
+ */
+function colorConnectedNodes(mainNodeId) {{
+    const nodeUpdates = [];
+    const edgeUpdates = [];
+
+    // D'abord, déterminer quels nœuds sont visibles selon la profondeur
+    const visibleNodes = new Set();
+    const allNodes = network.body.data.nodes.get();
+
+    allNodes.forEach(function(node) {{
+        const nodeData = getNodeData(node.id);
+        if (!nodeData) return;
+
+        // Le nœud principal sélectionné est toujours visible
+        if (node.id === mainNodeId) {{
+            visibleNodes.add(node.id);
+            return;
+        }}
+
+        // Pour tous les autres nœuds (y compris les autres nœuds principaux),
+        // vérifier s'ils sont dans la profondeur définie
+        if (isNodeVisibleAtDepth(node.id, mainNodeId, currentDepth)) {{
+            visibleNodes.add(node.id);
+        }}
+    }});
+
+    // Mettre à jour les nœuds avec les couleurs appropriées
+    allNodes.forEach(function(node) {{
+        const nodeData = getNodeData(node.id);
+        if (!nodeData) return;
+
+        const isVisible = visibleNodes.has(node.id);
+
+        if (!isVisible) {{
+            // Nœud hors profondeur - cacher
+            nodeUpdates.push({{
+                id: node.id,
+                hidden: true
+            }});
+            return;
+        }}
+
+        // Nœud visible - déterminer la couleur
+        if (node.id === mainNodeId) {{
+            // Nœud principal sélectionné - couleur principale
+            nodeUpdates.push({{
+                id: node.id,
+                color: {{ background: '{self.MAIN_NODE_COLOR}', border: '#333' }},
+                hidden: false
+            }});
+        }} else if (nodeData.is_main) {{
+            // Autre nœud principal visible (dans la profondeur) - couleur secondaire spéciale
+            nodeUpdates.push({{
+                id: node.id,
+                color: {{ background: '#ffaa44', border: '#333' }},  // Orange plus clair
+                hidden: false
+            }});
+        }} else {{
+            // Nœud secondaire - couleur selon le score de relation
+            const scores = nodeData.relationship_scores || {{}};
+            const score = scores[mainNodeId] || 0;
+            const color = score > 0 ? getScoreColor(score) : '{self.SCORE_COLORS["none"]}';
+            nodeUpdates.push({{
+                id: node.id,
+                color: {{ background: color, border: '#333' }},
+                hidden: false
+            }});
+        }}
+    }});
+
+    // Mettre à jour les arcs - un arc est visible seulement si les deux extrémités sont visibles
+    const allEdges = network.body.data.edges.get();
+    allEdges.forEach(function(edge) {{
+        const fromVisible = visibleNodes.has(edge.from);
+        const toVisible = visibleNodes.has(edge.to);
+
+        edgeUpdates.push({{
+            id: edge.id,
+            hidden: !(fromVisible && toVisible)
+        }});
+    }});
+
+    if (nodeUpdates.length > 0) network.body.data.nodes.update(nodeUpdates);
+    if (edgeUpdates.length > 0) network.body.data.edges.update(edgeUpdates);
+}}
+
+/**
+ * Réinitialise les couleurs et affiche tous les nœuds selon la profondeur actuelle.
+ * En mode reset : tous les nœuds principaux sont visibles, les secondaires sont filtrés par profondeur.
+ */
+function resetNodeColors() {{
+    const nodeUpdates = [];
+    const edgeUpdates = [];
+
+    // D'abord, déterminer quels nœuds sont visibles
+    const visibleNodes = new Set();
+    const allNodes = network.body.data.nodes.get();
+
+    allNodes.forEach(function(node) {{
+        const data = getNodeData(node.id);
+        if (!data) return;
+
+        // Tous les nœuds principaux sont toujours visibles en mode reset
+        if (data.is_main) {{
+            visibleNodes.add(node.id);
+            return;
+        }}
+
+        // Pour les nœuds secondaires, vérifier la profondeur (depuis n'importe quel main)
+        if (isNodeVisibleAtDepth(node.id, null, currentDepth)) {{
+            visibleNodes.add(node.id);
+        }}
+    }});
+
+    // Mettre à jour les nœuds
+    allNodes.forEach(function(node) {{
+        const data = getNodeData(node.id);
+        if (!data) return;
+
+        const isVisible = visibleNodes.has(node.id);
+
+        if (data.is_main) {{
+            // Nœuds principaux - toujours visibles avec leur couleur
+            nodeUpdates.push({{
+                id: node.id,
+                color: {{ background: '{self.MAIN_NODE_COLOR}', border: '#333' }},
+                hidden: false
+            }});
+        }} else {{
+            // Nœuds secondaires - gris si visible, caché sinon
+            nodeUpdates.push({{
+                id: node.id,
+                color: {{ background: '{self.SCORE_COLORS["none"]}', border: '#666' }},
+                hidden: !isVisible
+            }});
+        }}
+    }});
+
+    // Mettre à jour les arcs selon la visibilité des nœuds
+    const allEdges = network.body.data.edges.get();
+    allEdges.forEach(function(edge) {{
+        const fromVisible = visibleNodes.has(edge.from);
+        const toVisible = visibleNodes.has(edge.to);
+
+        edgeUpdates.push({{
+            id: edge.id,
+            hidden: !(fromVisible && toVisible)
+        }});
+    }});
+
+    network.body.data.nodes.update(nodeUpdates);
+    network.body.data.edges.update(edgeUpdates);
+
+    // Forcer le redessin
+    network.redraw();
+}}
+
+function showToast(msg, type) {{
+    const t = document.createElement('div');
+    t.style.cssText = 'position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:6px;' +
+        'font-family:system-ui,sans-serif;font-size:13px;font-weight:500;z-index:10000;' +
+        'box-shadow:0 4px 12px rgba(0,0,0,0.15);' +
+        (type === 'success' ? 'background:#d4edda;color:#155724;border:1px solid #c3e6cb;' :
+                              'background:#d1ecf1;color:#0c5460;border:1px solid #bee5eb;');
+    t.textContent = msg;
+    document.body.appendChild(t);
+    setTimeout(function() {{ t.remove(); }}, 2500);
+}}
+
+/**
+ * Fonction appelée quand on change la profondeur dans le sélecteur.
+ */
+function updateDepthFilter() {{
+    const selector = document.getElementById('depthSelector');
+    if (selector) {{
+        currentDepth = selector.value;
+
+        // Mettre à jour le label affichant la profondeur actuelle
+        const depthLabel = document.getElementById('depthLabel');
+        if (depthLabel) {{
+            depthLabel.textContent = currentDepth === 'all' ? 'All' : currentDepth + ' hop(s)';
+        }}
+
+        // Si un nœud principal est sélectionné, rafraîchir l'affichage avec ce nœud
+        if (lastSelectedMainNode) {{
+            colorConnectedNodes(lastSelectedMainNode);
+        }} else {{
+            resetNodeColors();
+        }}
+    }}
+}}
+
+// Event handlers
+network.on("click", function(params) {{
+    if (params.nodes.length > 0) {{
+        const nodeId = params.nodes[0];
+        const nodeData = getNodeData(nodeId);
+        if (nodeData && nodeData.is_main) {{
+            // Si on clique sur un nœud principal, colorer selon ce nœud
+            if (lastSelectedMainNode !== nodeId) {{
+                lastSelectedMainNode = nodeId;
+                colorConnectedNodes(nodeId);
+                showToast("Colored by: " + nodeId.slice(0, 10) + "...", "success");
+            }}
+        }}
+    }} else if (params.nodes.length === 0 && params.edges.length === 0) {{
+        // Reset seulement si on clique sur le fond (pas sur une arête)
+        if (lastSelectedMainNode) {{
+            lastSelectedMainNode = null;
+            resetNodeColors();
+            showToast("View reset", "info");
+        }}
+    }}
+}});
+
+network.on("hoverNode", function() {{ document.body.style.cursor = 'pointer'; }});
+network.on("blurNode", function() {{ document.body.style.cursor = 'default'; }});
+
+// Fit all nodes after stabilization
+network.once("stabilizationIterationsDone", function() {{
+    network.fit({{
+        animation: {{ duration: 500, easingFunction: 'easeInOutQuad' }}
+    }});
+}});
+"""
+
+    def _generate_legend_html(self) -> str:
+        """Génère la légende HTML avec le sélecteur de profondeur amélioré."""
+        items = [
+            ("80-100", self.SCORE_COLORS["high"], "Strong"),
+            ("50-79", self.SCORE_COLORS["medium"], "Medium"),
+            ("20-49", self.SCORE_COLORS["low"], "Weak"),
+            ("0-19", self.SCORE_COLORS["very_low"], "Very weak"),
+            ("None", self.SCORE_COLORS["none"], "No relation"),
+            ("Main", self.MAIN_NODE_COLOR, "Principal"),
+        ]
+        items_html = "".join([
+            f"<div style='display:flex;align-items:center;margin:4px 0;font-size:11px;'>"
+            f"<div style='width:12px;height:12px;border-radius:50%;background:{c};margin-right:8px;border:2px solid #333;'></div>"
+            f"<b>{s}</b>: {l}</div>"
+            for s, c, l in items
+        ])
+        depth_selector = """
+            <div style="margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
+                <div style="font-size:11px;font-weight:600;margin-bottom:6px;">Depth (hops)</div>
+                <select id="depthSelector" onchange="updateDepthFilter()" style="width:100%;padding:4px 8px;font-size:11px;border:1px solid #ddd;border-radius:4px;cursor:pointer;background:white;">
+                    <option value="1">1 hop (direct)</option>
+                    <option value="2">2 hops</option>
+                    <option value="3">3 hops</option>
+                    <option value="all" selected>All depths</option>
+                </select>
+                <div id="depthInfo" style="margin-top:6px;font-size:10px;color:#666;line-height:1.4;">
+                    Showing: <span id="depthLabel">All</span>
+                </div>
+            </div>
+        """
+        instructions = """
+            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #eee;font-size:10px;color:#666;line-height:1.4;">
+                <b>Click a main node</b> to see its connections<br>
+                <b>Click background</b> to reset view
+            </div>
+        """
+        return f"""<div style="position:absolute;top:15px;left:15px;background:rgba(255,255,255,0.97);padding:12px 16px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.15);font-family:system-ui,sans-serif;z-index:1000;max-width:200px;">
+            <div style="font-size:13px;font-weight:600;margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:6px;">Relationship Score</div>
+            {items_html}
+            {depth_selector}
+            {instructions}
+        </div>"""
+
+    def create_visualization(
+        self,
+        graph: nx.MultiDiGraph,
+        main_addresses: List[Address],
+        title: str = "Ethereum Correlation Graph"
+    ) -> Network:
+        """Crée le réseau Pyvis."""
+
+        net = Network(
+            height="900px",
+            width="100%",
+            bgcolor="#f8f9fa",
+            font_color="#333",
+            directed=True
+        )
+
+        # Options optimisées - tooltips activés
+        net.set_options("""{
+          "physics": {
+            "enabled": true,
+            "solver": "forceAtlas2Based",
+            "forceAtlas2Based": {
+              "gravitationalConstant": -100,
+              "centralGravity": 0.01,
+              "springLength": 200,
+              "springConstant": 0.08
+            },
+            "maxVelocity": 50,
+            "minVelocity": 0.1,
+            "timestep": 0.35,
+            "stabilization": {"enabled": true, "iterations": 1000}
+          },
+          "interaction": {
+            "hover": true,
+            "tooltipDelay": 100,
+            "hideEdgesOnDrag": true,
+            "navigationButtons": true
+          }
+        }""")
+
+        # Construire données
+        nodes_data, nodes_js_data = self._build_node_data(graph, main_addresses)
+        edges_data = self._build_edge_data(graph)
+
+        # Ajouter nœuds avec positions calculées
+        positions = self._calculate_positions(graph, main_addresses)
+        main_addrs = {a.address for a in main_addresses}
+
+        for node in nodes_data:
+            pos = positions.get(node['id'], (0, 0))
+            is_main = node['id'] in main_addrs
+
+            # Nœuds principaux: fixés aux extrémités
+            # Nœuds secondaires: libres de bouger
+            net.add_node(
+                node['id'],
+                label=node['label'],
+                title=node['title'],
+                color=node['color'],
+                size=node['size'],
+                shape=node['shape'],
+                font=node['font'],
+                borderWidth=node['borderWidth'],
+                x=pos[0],
+                y=pos[1],
+                fixed=is_main,  # Fixe seulement les nœuds principaux
+                hidden=False    # Explicitement visible par défaut
+            )
+
+        # Ajouter arcs
+        for edge in edges_data:
+            net.add_edge(
+                edge['from'],
+                edge['to'],
+                width=edge['width'],
+                title=edge['title'],
+                color=edge['color'],
+                arrows=edge['arrows'],
+                smooth=edge['smooth']
+            )
+
+        # Générer HTML
+        net.generate_html()
+
+        # Injecter JavaScript
+        custom_js = self._get_custom_js(nodes_js_data)
+        net.html = net.html.replace('</body>', f'<script>{custom_js}</script></body>')
+
+        # Ajouter légende
+        legend_html = self._generate_legend_html()
+        net.html = net.html.replace('<div id="mynetwork"', f'{legend_html}<div id="mynetwork"')
+
+        return net
+
+    def visualize(
+        self,
+        graph: nx.MultiDiGraph,
+        main_addresses: List[Address],
+        title: str = "Ethereum Correlation Graph",
+        auto_open: bool = True
+    ) -> str:
+        """Crée et sauvegarde la visualisation dans un sous-dossier timestampé."""
+        net = self.create_visualization(graph, main_addresses, title)
+
+        # Créer un sous-dossier avec timestamp pour cette exécution
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.output_dir = self.base_output_dir / timestamp
+        self.output_dir.mkdir(exist_ok=True)
+
+        main_short = main_addresses[0].address[:8] if main_addresses else "unknown"
+        filename = f"interactive_graph_{main_short}.html"
+        output_path = self.output_dir / filename
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(net.html)
+
+        if auto_open:
+            import webbrowser
+            webbrowser.open(f'file://{output_path.absolute()}')
+
+        return str(output_path)
