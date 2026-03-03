@@ -37,33 +37,64 @@ class CorrelationService:
             self.graph.add_node(receiver)
             self.graph.add_edge(sender, receiver, weight=value, weight_wei=value_wei, hash=tx_hash, time=timestamp)
 
-    def _select_expansion_candidates(
+    def _get_top_candidates_from_nodes(
         self,
-        table1: AddressRelationshipTable,
-        table2: AddressRelationshipTable,
+        nodes: List[Address],
         top_n: int,
-        visited: Set[str]
+        visited: Set[str],
+        max_nodes_to_process: int = 10
     ) -> List[Address]:
         """
-        Sélectionne les top_n meilleurs candidats non visités pour l'expansion.
+        Sélectionne les meilleurs candidats d'expansion depuis une liste de nœuds.
 
-        Combine les relationships des deux tables et sélectionne les meilleurs scores.
+        Optimisation : Ne calcule les scores que pour les max_nodes_to_process nœuds
+        les plus prometteurs (ceux avec le plus de transactions), pas pour tous.
+
+        Args:
+            nodes: Liste des nœuds à analyser
+            top_n: Nombre de candidats à retourner
+            visited: Set des adresses déjà visitées
+            max_nodes_to_process: Nombre max de nœuds à traiter (optimisation perf)
+
+        Returns:
+            Liste des top_n meilleurs candidats
         """
-        candidates = {}
+        if not nodes:
+            return []
 
-        # Get top relationships from both tables (with margin for filtering)
-        rels1 = table1.get_top_relationships(top_n * 2)
-        rels2 = table2.get_top_relationships(top_n * 2)
+        # Trier les nœuds par nombre de transactions (desc) pour traiter les plus actifs
+        nodes_by_activity = sorted(
+            nodes,
+            key=lambda addr: self.graph.degree(addr.address),
+            reverse=True
+        )
 
-        # Merge and deduplicate, keeping best score
-        for rel in rels1 + rels2:
-            addr = rel.target.address
-            if addr not in visited:
-                if addr not in candidates or rel.total_score > candidates[addr][1]:
-                    candidates[addr] = (Address(addr), rel.total_score)
+        # Ne traiter que les plus actifs pour optimiser
+        nodes_to_process = nodes_by_activity[:max_nodes_to_process]
 
-        # Sort by score and return top_n
-        sorted_candidates = sorted(candidates.values(), key=lambda x: x[1], reverse=True)
+        all_candidates = {}
+        processed = 0
+
+        for node_addr in nodes_to_process:
+            # Calculer les scores de relation depuis ce nœud
+            table = self.calculate_relationship_scores(node_addr)
+            processed += 1
+
+            # Récupérer les top relations (avec marge pour le filtrage)
+            top_rels = table.get_top_relationships(top_n * 3)
+
+            for rel in top_rels:
+                candidate = rel.target.address
+                if candidate not in visited and candidate not in [n.address for n in nodes]:
+                    # Garder le meilleur score pour ce candidat
+                    if candidate not in all_candidates or rel.total_score > all_candidates[candidate][1]:
+                        all_candidates[candidate] = (rel.target, rel.total_score)
+
+        if all_candidates:
+            print(f"[Expansion] Processed {processed}/{len(nodes)} nodes, found {len(all_candidates)} unique candidates")
+
+        # Sélectionner les top_n meilleurs
+        sorted_candidates = sorted(all_candidates.values(), key=lambda x: x[1], reverse=True)
         return [addr for addr, _ in sorted_candidates[:top_n]]
 
     def build_graph(
@@ -75,14 +106,20 @@ class CorrelationService:
     ):
         """
         Construit le graphe avec expansion récursive optionnelle.
-        Utilise get_transactions (1 appel) pour la base, puis get_transactions_for_address
-        pour l'expansion afin d'économiser les crédits Dune.
+
+        Processus:
+        1. Niveau 0: Récupère les transactions des 2 adresses principales (1 appel API)
+        2. Niveau 1+: Pour chaque niveau d'expansion, sélectionne les top_n meilleurs
+           candidats parmi les voisins et récupère leurs transactions
 
         Args:
             address1: Première adresse principale
             address2: Deuxième adresse principale
-            expansion_depth: Nombre d'itérations d'expansion (1 = juste les 2 adresses principales)
-            top_n: Nombre de nœuds à sélectionner par itération d'expansion
+            expansion_depth: Nombre de niveaux d'expansion
+                - 1: Uniquement les adresses principales (niveau 0)
+                - 2: Niveau 0 + 1 niveau d'expansion (voisins des principales)
+                - 3: Niveau 0 + 2 niveaux d'expansion (voisins des voisins)
+            top_n: Nombre de nœuds à sélectionner par niveau d'expansion
         """
         # Clear the graph to avoid duplicating edges when build_graph is called multiple times
         self.graph.clear()
@@ -94,50 +131,47 @@ class CorrelationService:
         # Track visited addresses to avoid cycles
         visited = {address1.address, address2.address}
 
-        print(f"\n[Expansion] Depth={expansion_depth}, Top_N={top_n}")
+        print(f"\n[Expansion] Configuration: depth={expansion_depth}, top_n={top_n}")
 
         # NIVEAU 0: Utiliser get_transactions pour les 2 adresses principales (1 seul appel API)
-        print(f"[Expansion] Level 1/{expansion_depth}")
-        print(f"[Expansion] Fetching base transactions for both main addresses (1 API call)...")
+        print(f"[Expansion] Level 0 (base): Fetching transactions for main addresses...")
 
         df_base = self.dune_adapter.get_transactions(address1.address, address2.address, limit=5)
         self._add_transactions_to_graph(df_base)
-        print(f"[Expansion] Base graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
+
+        level0_nodes = self.graph.number_of_nodes()
+        level0_edges = self.graph.number_of_edges()
+        print(f"[Expansion] Level 0 complete: {level0_nodes} nodes, {level0_edges} edges")
 
         # NIVEAUX SUIVANTS: Expansion récursive avec get_transactions_for_address
+        # expansion_depth=1 : uniquement niveau 0 (base)
+        # expansion_depth=2 : niveau 0 + 1 niveau d'expansion
+        # expansion_depth=3 : niveau 0 + 2 niveaux d'expansion, etc.
         if expansion_depth > 1:
-            # Après le niveau 0, tous les nœuds (sauf les principaux) sont le niveau actuel
-            current_level_addrs = list(set(self.graph.nodes()) - visited)
-            current_level = [Address(addr) for addr in current_level_addrs]
+            # Niveau 1 : tous les voisins directs des adresses principales
+            current_level = [Address(addr) for addr in set(self.graph.nodes()) - visited]
 
             for depth in range(1, expansion_depth):
-                print(f"\n[Expansion] Level {depth + 1}/{expansion_depth}")
+                print(f"\n[Expansion] Level {depth}/{expansion_depth - 1} (iteration {depth})")
 
                 if not current_level:
                     print(f"[Expansion] No nodes to expand at this level, stopping")
                     break
 
-                # Collecter les candidats depuis TOUS les nœuds du niveau actuel
-                all_candidates = {}
-                for node_addr in current_level:
-                    table = self.calculate_relationship_scores(node_addr)
-                    top_rels = table.get_top_relationships(top_n * 2)
-
-                    for rel in top_rels:
-                        candidate = rel.target.address
-                        if candidate not in visited:
-                            if candidate not in all_candidates or rel.total_score > all_candidates[candidate][1]:
-                                all_candidates[candidate] = (rel.target, rel.total_score)
-
-                # Sélectionner les top_n meilleurs
-                sorted_candidates = sorted(all_candidates.values(), key=lambda x: x[1], reverse=True)
-                candidates = [addr for addr, _ in sorted_candidates[:top_n]]
+                # Utiliser la méthode optimisée pour sélectionner les candidats
+                # Limite à 10 nœuds traités max pour optimiser les performances
+                candidates = self._get_top_candidates_from_nodes(
+                    current_level,
+                    top_n=top_n,
+                    visited=visited,
+                    max_nodes_to_process=10
+                )
 
                 if not candidates:
                     print(f"[Expansion] No new candidates found, stopping expansion early")
                     break
 
-                print(f"[Expansion] Expanding {len(current_level)} nodes -> {len(candidates)} new candidates")
+                print(f"[Expansion] Fetching transactions for {len(candidates)} selected candidates...")
 
                 # Récupérer les transactions pour chaque candidat
                 for addr in candidates:
