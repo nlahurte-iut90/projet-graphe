@@ -75,6 +75,8 @@ class CorrelationService:
     ):
         """
         Construit le graphe avec expansion récursive optionnelle.
+        Utilise get_transactions (1 appel) pour la base, puis get_transactions_for_address
+        pour l'expansion afin d'économiser les crédits Dune.
 
         Args:
             address1: Première adresse principale
@@ -91,36 +93,45 @@ class CorrelationService:
 
         # Track visited addresses to avoid cycles
         visited = {address1.address, address2.address}
-        current_level = [address1, address2]
 
         print(f"\n[Expansion] Depth={expansion_depth}, Top_N={top_n}")
-        print(f"[Expansion] Starting with {len(current_level)} main addresses")
 
-        for depth in range(expansion_depth):
-            print(f"\n[Expansion] Level {depth + 1}/{expansion_depth}")
-            print(f"[Expansion] Processing {len(current_level)} addresses...")
+        # NIVEAU 0: Utiliser get_transactions pour les 2 adresses principales (1 seul appel API)
+        print(f"[Expansion] Level 1/{expansion_depth}")
+        print(f"[Expansion] Fetching base transactions for both main addresses (1 API call)...")
 
-            # Fetch transactions for current level
-            for addr in current_level:
-                df = self.dune_adapter.get_transactions_for_address(addr.address, limit=5)
-                self._add_transactions_to_graph(df)
+        df_base = self.dune_adapter.get_transactions(address1.address, address2.address, limit=5)
+        self._add_transactions_to_graph(df_base)
+        print(f"[Expansion] Base graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
 
-            # Prepare next level (if not last iteration)
-            if depth < expansion_depth - 1:
-                # Calculate scores to find best candidates
+        # NIVEAUX SUIVANTS: Expansion récursive avec get_transactions_for_address
+        if expansion_depth > 1:
+            current_level = [address1, address2]
+
+            for depth in range(1, expansion_depth):
+                print(f"\n[Expansion] Level {depth + 1}/{expansion_depth}")
+
+                # Calculer les scores pour trouver les meilleurs candidats
                 table1 = self.calculate_relationship_scores(address1)
                 table2 = self.calculate_relationship_scores(address2)
 
-                # Select top candidates
+                # Sélectionner les candidats
                 candidates = self._select_expansion_candidates(table1, table2, top_n, visited)
 
                 if not candidates:
                     print(f"[Expansion] No new candidates found, stopping expansion early")
                     break
 
-                current_level = candidates
+                print(f"[Expansion] Processing {len(candidates)} new addresses...")
+
+                # Utiliser get_transactions_for_address pour l'expansion (nécessite plus de données)
+                for addr in candidates:
+                    df = self.dune_adapter.get_transactions_for_address(addr.address, limit=5)
+                    self._add_transactions_to_graph(df)
+
                 visited.update(a.address for a in candidates)
-                print(f"[Expansion] Selected {len(current_level)} new addresses for next level")
+                current_level = candidates
+                print(f"[Expansion] Level complete: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
 
         print(f"\n[Expansion] Graph built: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
 

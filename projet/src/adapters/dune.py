@@ -21,16 +21,16 @@ class DuneAdapter:
         # Note: 'ethereum.transactions' est une table standard sur Dune
         query_sql = f"""
             WITH address1_tx AS (
-                SELECT "from", "to", (value/1e18) AS value_eth, hash, block_time
-                FROM ethereum.transactions 
-                WHERE ("from" = {address1} OR "to" = {address1})
+                SELECT "from", "to", (value/1e18) AS value_eth, value AS value_wei, hash, block_time
+                FROM ethereum.transactions
+                WHERE ("from" = from_hex('{address1}') OR "to" = from_hex('{address1}'))
                 ORDER BY block_time DESC
                 LIMIT {limit}
             ),
             address2_tx AS (
-                SELECT "from", "to", (value/1e18) AS value_eth, hash, block_time
-                FROM ethereum.transactions 
-                WHERE ("from" = {address2} OR "to" = {address2})
+                SELECT "from", "to", (value/1e18) AS value_eth, value AS value_wei, hash, block_time
+                FROM ethereum.transactions
+                WHERE ("from" = from_hex('{address2}') OR "to" = from_hex('{address2}'))
                 ORDER BY block_time DESC
                 LIMIT {limit}
             )
