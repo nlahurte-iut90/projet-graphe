@@ -124,3 +124,102 @@ class RelationshipTableFormatter:
         elif score >= 20:
             return "dim yellow"
         return "dim"
+
+    def display_expanded_node_relationships(
+        self,
+        console: Console,
+        address1: Address,
+        address2: Address,
+        table1: AddressRelationshipTable,
+        table2: AddressRelationshipTable,
+        limit: int = 10
+    ):
+        """Affiche les relations entre les adresses principales et les nœuds d'expansion.
+
+        Cette méthode montre les scores de relation pour tous les nouveaux nœuds
+        ajoutés par l'expansion du graphe, pas seulement entre les 2 adresses principales.
+        """
+        # Identifier les nœuds d'expansion (tous sauf les 2 adresses principales)
+        expanded_nodes_1 = [
+            rel for rel in table1.relationships.values()
+            if rel.target.address != address2.address
+        ]
+        expanded_nodes_2 = [
+            rel for rel in table2.relationships.values()
+            if rel.target.address != address1.address
+        ]
+
+        if not expanded_nodes_1 and not expanded_nodes_2:
+            return
+
+        console.print("\n")
+        console.print(Panel(
+            "[bold cyan]Relations avec les nœuds d'expansion[/bold cyan]",
+            border_style="cyan"
+        ))
+
+        # Trier par score total décroissant
+        expanded_nodes_1.sort(key=lambda r: r.total_score, reverse=True)
+        expanded_nodes_2.sort(key=lambda r: r.total_score, reverse=True)
+
+        # Tableau pour l'adresse 1
+        if expanded_nodes_1:
+            table_addr1 = Table(
+                title=f"Relations de {address1.address[:20]}... avec nœuds d'expansion",
+                show_header=True,
+                header_style="bold cyan"
+            )
+            table_addr1.add_column("Nœud", style="dim", min_width=20)
+            table_addr1.add_column("Direct", justify="right", width=8)
+            table_addr1.add_column("Indirect", justify="right", width=8)
+            table_addr1.add_column("Total", justify="right", width=8)
+            table_addr1.add_column("Tx", justify="right", width=6)
+            table_addr1.add_column("Volume (ETH)", justify="right", width=12)
+
+            for rel in expanded_nodes_1[:limit]:
+                target_short = rel.target.address[:20] + "..."
+                score_style = self._score_color(rel.total_score)
+                tx_count = rel.metrics.get('tx_count', 0)
+                volume = rel.metrics.get('total_volume', 0)
+
+                table_addr1.add_row(
+                    target_short,
+                    f"{rel.direct_score:.1f}",
+                    f"{rel.indirect_score:.1f}",
+                    f"[{score_style}]{rel.total_score:.1f}[/{score_style}]",
+                    str(tx_count) if tx_count else "-",
+                    f"{volume:.4f}" if volume else "-"
+                )
+
+            console.print(table_addr1)
+
+        # Tableau pour l'adresse 2
+        if expanded_nodes_2:
+            table_addr2 = Table(
+                title=f"Relations de {address2.address[:20]}... avec nœuds d'expansion",
+                show_header=True,
+                header_style="bold cyan"
+            )
+            table_addr2.add_column("Nœud", style="dim", min_width=20)
+            table_addr2.add_column("Direct", justify="right", width=8)
+            table_addr2.add_column("Indirect", justify="right", width=8)
+            table_addr2.add_column("Total", justify="right", width=8)
+            table_addr2.add_column("Tx", justify="right", width=6)
+            table_addr2.add_column("Volume (ETH)", justify="right", width=12)
+
+            for rel in expanded_nodes_2[:limit]:
+                target_short = rel.target.address[:20] + "..."
+                score_style = self._score_color(rel.total_score)
+                tx_count = rel.metrics.get('tx_count', 0)
+                volume = rel.metrics.get('total_volume', 0)
+
+                table_addr2.add_row(
+                    target_short,
+                    f"{rel.direct_score:.1f}",
+                    f"{rel.indirect_score:.1f}",
+                    f"[{score_style}]{rel.total_score:.1f}[/{score_style}]",
+                    str(tx_count) if tx_count else "-",
+                    f"{volume:.4f}" if volume else "-"
+                )
+
+            console.print(table_addr2)

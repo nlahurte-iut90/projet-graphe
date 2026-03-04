@@ -210,14 +210,16 @@ def run_analysis(console: Console, params: dict):
     # Paramètres d'expansion
     expansion_depth = params['expansion_depth']
     top_n = params['top_n']
+    tx_limit = params['tx_limit']
 
-    with console.status("[bold green]Construction du graphe de transactions..."):
-        correlation_service.build_graph(address1, address2, expansion_depth=expansion_depth, top_n=top_n)
-
-    # Calcul des tableaux de relation pour chaque main address
-    with console.status("[bold green]Calcul des scores de relation..."):
-        table1 = correlation_service.calculate_relationship_scores(address1)
-        table2 = correlation_service.calculate_relationship_scores(address2)
+    # Construction du graphe avec expansion et calcul des scores
+    with console.status("[bold green]Construction du graphe et expansion..."):
+        table1, table2 = correlation_service.build_graph_with_expansion(
+            address1, address2,
+            expansion_depth=expansion_depth,
+            top_n=top_n,
+            tx_limit=tx_limit
+        )
 
     # Affichage des tableaux
     formatter = RelationshipTableFormatter(console)
@@ -225,8 +227,11 @@ def run_analysis(console: Console, params: dict):
     console.print("\n")
     formatter.display_both_tables(table1, table2, limit=10)
 
+    # Affichage des relations avec les nœuds d'expansion
+    formatter.display_expanded_node_relationships(console, address1, address2, table1, table2)
+
     # Calcul et affichage du score de corrélation global
-    result = correlation_service.calculate_score(address1, address2, expansion_depth=expansion_depth, top_n=top_n)
+    result = correlation_service.calculate_score(address1, address2, expansion_depth=expansion_depth, top_n=top_n, tx_limit=tx_limit)
 
     # Affichage du résumé
     formatter.display_summary(address1, address2, result.score, table1, table2)
