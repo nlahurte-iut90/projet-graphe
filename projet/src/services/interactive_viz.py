@@ -134,11 +134,13 @@ Time: {timestamp}"""
                         score = rel.total_score
                 relationship_scores[main_addr.address] = score
 
-            # Couleur - par défaut tous les nœuds secondaires sont gris
+            # Couleur - basée sur le score total de corrélation (max des deux tables)
             if is_main:
                 color = self.MAIN_NODE_COLOR
             else:
-                color = self.SCORE_COLORS["none"]
+                # Prendre le score maximum des deux adresses principales
+                max_score = max(relationship_scores.values()) if relationship_scores else 0
+                color = self._get_score_color(max_score)
 
             # Label
             if is_main:
@@ -531,10 +533,14 @@ function resetNodeColors() {{
                 hidden: false
             }});
         }} else {{
-            // Nœuds secondaires - gris si visible, caché sinon
+            // Nœuds secondaires - couleur selon le score max
+            const nodeData = getNodeData(node.id);
+            const scores = nodeData ? nodeData.relationship_scores : {{}};
+            const maxScore = Object.values(scores).length > 0 ? Math.max(...Object.values(scores)) : 0;
+            const scoreColor = getScoreColor(maxScore);
             nodeUpdates.push({{
                 id: node.id,
-                color: {{ background: '{self.SCORE_COLORS["none"]}', border: '#666' }},
+                color: {{ background: scoreColor, border: '#666' }},
                 hidden: !isVisible
             }});
         }}
@@ -660,7 +666,8 @@ network.once("stabilizationIterationsDone", function() {{
         """
         instructions = """
             <div style="margin-top:8px;padding-top:8px;border-top:1px solid #eee;font-size:10px;color:#666;line-height:1.4;">
-                <b>Click a main node</b> to see its connections<br>
+                <b>All nodes colored</b> by max correlation score<br>
+                <b>Click a main node</b> to filter by its connections<br>
                 <b>Click background</b> to reset view
             </div>
         """
