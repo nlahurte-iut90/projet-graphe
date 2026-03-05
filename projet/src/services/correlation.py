@@ -2,7 +2,6 @@ import networkx as nx
 import matplotlib
 matplotlib.use('tkAgg')
 import matplotlib.pyplot as plt
-import matplotlib.cm as cm
 from src.domain.models import Address, CorrelationResult, RelationshipScore, AddressRelationshipTable, PathInfo, PropagatedPathInfo
 from src.adapters.dune import DuneAdapter
 import pandas as pd
@@ -707,41 +706,14 @@ class CorrelationService:
             sub_pos = nx.spring_layout(viz_graph.subgraph(remaining), center=(0, 0))
             pos.update(sub_pos)
 
-        # Récupérer les scores depuis les tables de relation
-        table1 = self._table1
-        table2 = self._table2
-
-        def get_node_color(node_id: str) -> str:
-            """Retourne la couleur du nœud basée sur son score total de corrélation."""
-            if node_id == address1.address or node_id == address2.address:
-                return '#ff7f0e'  # Orange pour les adresses principales
-
-            # Chercher le score dans les deux tables
-            score = 0.0
-            if table1 and node_id in table1.relationships:
-                score = max(score, table1.relationships[node_id].total_score)
-            if table2 and node_id in table2.relationships:
-                score = max(score, table2.relationships[node_id].total_score)
-
-            # Gradient de couleur selon le score (viridis: jaune=élevé, violet=faible)
-            if score >= 80:
-                return '#28a745'  # Vert fort
-            elif score >= 50:
-                return '#90ee90'  # Vert clair
-            elif score >= 20:
-                return '#ffc107'  # Jaune/orange
-            elif score > 0:
-                return '#fd7e14'  # Orange foncé
-            else:
-                return '#6c757d'  # Gris pour pas de relation
-
         node_colors = []
         node_sizes = []
         for node in viz_graph.nodes():
-            node_colors.append(get_node_color(node))
             if node == address1.address or node == address2.address:
+                node_colors.append('#ff7f0e')
                 node_sizes.append(1000)
             else:
+                node_colors.append('#1f77b4')
                 node_sizes.append(600)
 
         nx.draw_networkx_nodes(viz_graph, pos, node_color=node_colors, node_size=node_sizes, alpha=0.9, edgecolors='white', linewidths=1.5)
@@ -804,18 +776,6 @@ class CorrelationService:
                 labels[node] = f"{node[:4]}..{node[-3:]}"
 
         nx.draw_networkx_labels(viz_graph, pos, labels=labels, font_size=8, font_weight='bold', font_color='black')
-
-        # Ajouter une légende pour les couleurs de score
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor='#ff7f0e', edgecolor='white', label='Main Address'),
-            Patch(facecolor='#28a745', edgecolor='white', label='Score ≥ 80 (Strong)'),
-            Patch(facecolor='#90ee90', edgecolor='white', label='Score 50-79 (Medium)'),
-            Patch(facecolor='#ffc107', edgecolor='white', label='Score 20-49 (Weak)'),
-            Patch(facecolor='#fd7e14', edgecolor='white', label='Score 1-19 (Very weak)'),
-            Patch(facecolor='#6c757d', edgecolor='white', label='No relation')
-        ]
-        plt.legend(handles=legend_elements, loc='upper left', fontsize=9, framealpha=0.9)
 
         plt.title(f"Transaction Graph (Individual Txs)", fontsize=14)
         plt.axis('off')
