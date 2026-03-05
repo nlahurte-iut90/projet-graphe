@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 
 
@@ -44,19 +44,44 @@ class PathInfo:
 
 
 @dataclass
+class PropagatedPathInfo:
+    """Information sur un chemin de propagation de score."""
+    source: Address           # Adresse principale (départ)
+    intermediate: List[Address]  # Nœuds intermédiaires
+    target: Address           # Nœud final
+    propagated_score: float   # Score propagé final
+    path_scores: List[Tuple[str, float]]  # [(adresse, score_local), ...]
+    decay_factor: float       # Facteur de déclin appliqué
+
+    def __repr__(self) -> str:
+        path = [self.source.address[:8] + "..."] + [a.address[:8] + "..." for a in self.intermediate] + [self.target.address[:8] + "..."]
+        path_str = " -> ".join(path)
+        return f"PropagatedPath({path_str}, score={self.propagated_score:.2f})"
+
+
+@dataclass
 class RelationshipScore:
     """Score de relation entre deux adresses."""
     source: Address
     target: Address
     direct_score: float  # Score basé sur les transactions directes
     indirect_score: float  # Score basé sur les chemins indirects
-    total_score: float  # Score total (max des deux)
+    propagated_score: float = 0.0  # NOUVEAU: Score par propagation multi-hop
+    total_score: float = 0.0  # Score total (max des trois)
     metrics: Dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        """Calcule le total_score comme le max des trois scores."""
+        object.__setattr__(
+            self,
+            'total_score',
+            max(self.direct_score, self.indirect_score, self.propagated_score)
+        )
 
     def __repr__(self) -> str:
         return (f"Relationship({self.source.address[:8]}... -> {self.target.address[:8]}..., "
                 f"direct={self.direct_score:.1f}, indirect={self.indirect_score:.1f}, "
-                f"total={self.total_score:.1f})")
+                f"propagated={self.propagated_score:.1f}, total={self.total_score:.1f})")
 
 
 @dataclass

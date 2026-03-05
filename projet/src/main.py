@@ -106,9 +106,15 @@ def interactive_config(console: Console) -> dict:
         console=console
     )
 
-    tx_limit = IntPrompt.ask(
-        "  Nombre de transactions à récupérer par adresse",
+    base_tx_limit = IntPrompt.ask(
+        "  Nombre de transactions à récupérer pour la base (adresses principales)",
         default=5,
+        console=console
+    )
+
+    expansion_tx_limit = IntPrompt.ask(
+        "  Nombre de transactions à récupérer pour l'expansion (nœuds découverts)",
+        default=3,
         console=console
     )
 
@@ -160,7 +166,8 @@ def interactive_config(console: Console) -> dict:
     summary.add_row("Adresse 2", f"[yellow]{address2[:20]}...{address2[-8:]}[/yellow]")
     summary.add_row("Profondeur d'expansion", str(expansion_depth))
     summary.add_row("Top N par niveau", str(top_n))
-    summary.add_row("Limite transactions", str(tx_limit))
+    summary.add_row("Limite transactions (base)", str(base_tx_limit))
+    summary.add_row("Limite transactions (expansion)", str(expansion_tx_limit))
     summary.add_row("Graphique matplotlib", "✓ Oui" if show_matplotlib else "✗ Non")
     summary.add_row("Graphique interactif", "✓ Oui" if generate_interactive else "✗ Non")
     summary.add_row("Export JSON", "✓ Oui" if export_json else "✗ Non")
@@ -183,7 +190,8 @@ def interactive_config(console: Console) -> dict:
         'address2': address2,
         'expansion_depth': expansion_depth,
         'top_n': top_n,
-        'tx_limit': tx_limit,
+        'base_tx_limit': base_tx_limit,
+        'expansion_tx_limit': expansion_tx_limit,
         'show_matplotlib': show_matplotlib,
         'generate_interactive': generate_interactive,
         'auto_open_browser': auto_open_browser,
@@ -210,7 +218,8 @@ def run_analysis(console: Console, params: dict):
     # Paramètres d'expansion
     expansion_depth = params['expansion_depth']
     top_n = params['top_n']
-    tx_limit = params['tx_limit']
+    base_tx_limit = params['base_tx_limit']
+    expansion_tx_limit = params['expansion_tx_limit']
 
     # Construction du graphe avec expansion et calcul des scores
     with console.status("[bold green]Construction du graphe et expansion..."):
@@ -218,7 +227,8 @@ def run_analysis(console: Console, params: dict):
             address1, address2,
             expansion_depth=expansion_depth,
             top_n=top_n,
-            tx_limit=tx_limit
+            base_tx_limit=base_tx_limit,
+            expansion_tx_limit=expansion_tx_limit
         )
 
     # Affichage des tableaux
@@ -231,7 +241,7 @@ def run_analysis(console: Console, params: dict):
     formatter.display_expanded_node_relationships(console, address1, address2, table1, table2)
 
     # Calcul et affichage du score de corrélation global
-    result = correlation_service.calculate_score(address1, address2, expansion_depth=expansion_depth, top_n=top_n, tx_limit=tx_limit)
+    result = correlation_service.calculate_score(address1, address2, expansion_depth=expansion_depth, top_n=top_n, base_tx_limit=base_tx_limit, expansion_tx_limit=expansion_tx_limit)
 
     # Affichage du résumé
     formatter.display_summary(address1, address2, result.score, table1, table2)
