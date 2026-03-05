@@ -11,6 +11,7 @@ from typing import Tuple, List, Optional, Dict, Set
 from datetime import datetime
 
 from src.services.interactive_viz import InteractiveGraphVisualizer
+from src.services.scoring import SimpleNodeScorer
 
 
 class CorrelationService:
@@ -108,19 +109,23 @@ class CorrelationService:
             return 0.5
 
     def _calculate_direct_score(self, addr1: Address, addr2: Address) -> Tuple[float, dict]:
-        """Calculate direct relationship score based on transactions."""
-        metrics = self._get_transaction_metrics(addr1.address, addr2.address)
-
-        if not metrics:
-            return 0.0, {}
-
-        volume_score = min(math.log10(metrics['total_volume'] + 1) / 3, 1.0)
-        freq_score = min(metrics['tx_count'] / 10, 1.0)
-        recency_score = self._calculate_recency_score(metrics['timestamps'])
-
-        total = (0.5 * volume_score + 0.3 * freq_score + 0.2 * recency_score) * 100
-
-        return total, metrics
+        """
+        Calculate direct relationship score using SimpleNodeScorer.
+        
+        Returns score based on: Activity (50%), Proximity (30%), Recency (20%)
+        """
+        scorer = SimpleNodeScorer(self.graph)
+        node_score = scorer.score(addr1.address, addr2.address)
+        
+        # Conserver les métriques brutes pour compatibilité
+        metrics = self._get_transaction_metrics(addr1.address, addr2.address) or {}
+        metrics['node_score_breakdown'] = {
+            'activity': node_score.activity,
+            'proximity': node_score.proximity,
+            'recency': node_score.recency
+        }
+        
+        return node_score.total, metrics
 
     def _calculate_indirect_score(self, addr1: Address, addr2: Address, max_depth: int = 3) -> Tuple[float, List[PathInfo]]:
         """Calculate indirect relationship score via intermediate nodes."""
@@ -314,11 +319,12 @@ class CorrelationService:
 
         # Étape 1: Obtenir tous les scores directs depuis main_address
         direct_scores = {}
+        scorer = SimpleNodeScorer(self.graph)
         for neighbor in self.graph.neighbors(main_address.address):
-            score, _ = self._calculate_direct_score(main_address, Address(neighbor))
-            if score > 0:
+            node_score = scorer.score(main_address.address, neighbor)
+            if node_score.total > 0:
                 # Normaliser le score à 0-1 pour la propagation
-                direct_scores[neighbor] = score / 100.0
+                direct_scores[neighbor] = node_score.total / 100.0
 
         if not direct_scores:
             return 0.0, []
@@ -380,19 +386,40 @@ class CorrelationService:
         return final_score, propagation_paths
 
     def calculate_relationship_scores(self, main_address: Address) -> AddressRelationshipTable:
-        """Generate relationship score table for a main address."""
+        """
+        Generate relationship score table for a main address using SimpleNodeScorer.
+        
+        Le scoring utilise 3 dimensions:
+        - Activity (50%): volume, fréquence, bidirectionnalité
+        - Proximity (30%): distance dans le graphe
+        - Recency (20%): fraîcheur de la dernière transaction
+        """
         relationships = {}
         connected_nodes = set(self.graph.nodes())
+        
+        # Initialiser le scorer une fois pour tout le graphe
+        scorer = SimpleNodeScorer(self.graph)
 
         for node_address in connected_nodes:
             if node_address == main_address.address:
                 continue
 
             target = Address(node_address)
-            direct_score, direct_metrics = self._calculate_direct_score(main_address, target)
+            
+            # NOUVEAU: Utiliser SimpleNodeScorer pour le score direct
+            node_score = scorer.score(main_address.address, node_address)
+            direct_score = node_score.total
+            
+            # Récupérer les métriques détaillées
+            direct_metrics = node_score.metrics
+            direct_metrics['score_breakdown'] = {
+                'activity': node_score.activity,
+                'proximity': node_score.proximity,
+                'recency': node_score.recency
+            }
+            
+            # Scores indirect et propagé (inchangés)
             indirect_score, indirect_paths = self._calculate_indirect_score(main_address, target)
-
-            # NOUVEAU: Calculer le score propagé
             propagated_score, propagation_paths = self._calculate_propagated_score(
                 main_address, target, max_depth=3
             )
