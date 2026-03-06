@@ -770,7 +770,8 @@ network.once("stabilizationIterationsDone", function() {{
         graph: nx.MultiDiGraph,
         main_addresses: List[Address],
         title: str = "Ethereum Correlation Graph",
-        auto_open: bool = True
+        auto_open: bool = True,
+        params: Optional[Dict[str, Any]] = None
     ) -> str:
         """Crée et sauvegarde la visualisation dans un sous-dossier timestampé."""
         net = self.create_visualization(graph, main_addresses, title)
@@ -781,7 +782,20 @@ network.once("stabilizationIterationsDone", function() {{
         self.output_dir.mkdir(exist_ok=True)
 
         main_short = main_addresses[0].address[:8] if main_addresses else "unknown"
-        filename = f"interactive_graph_{main_short}.html"
+        num_nodes = graph.number_of_nodes()
+        num_edges = graph.number_of_edges()
+        num_main = len(main_addresses)
+
+        # Construire le suffixe avec les paramètres
+        params_suffix = ""
+        if params:
+            depth = params.get('expansion_depth', '')
+            top_n = params.get('top_n', '')
+            base_limit = params.get('base_tx_limit', '')
+            exp_limit = params.get('expansion_tx_limit', '')
+            params_suffix = f"_d{depth}_top{top_n}_b{base_limit}_e{exp_limit}"
+
+        filename = f"interactive_graph_{main_short}_{num_nodes}nodes_{num_edges}edges_{num_main}main{params_suffix}.html"
         output_path = self.output_dir / filename
 
         with open(output_path, 'w', encoding='utf-8') as f:

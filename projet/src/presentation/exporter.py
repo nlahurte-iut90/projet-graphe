@@ -21,7 +21,7 @@ class RelationshipTableExporter:
             "source": rel.source.address,
             "target": rel.target.address,
             "direct_score": rel.direct_score,
-            "indirect_score": rel.indirect_score,
+            "indirecte_score": rel.propagated_score,
             "total_score": rel.total_score,
             "metrics": {
                 k: v for k, v in rel.metrics.items()
@@ -84,7 +84,7 @@ class RelationshipTableExporter:
             writer = csv.writer(f)
             writer.writerow([
                 'main_address', 'target_address', 'direct_score',
-                'indirect_score', 'total_score', 'tx_count', 'volume_eth'
+                'indirecte_score', 'total_score', 'tx_count', 'volume_eth'
             ])
 
             for table in tables:
@@ -93,7 +93,7 @@ class RelationshipTableExporter:
                         table.main_address.address,
                         rel.target.address,
                         rel.direct_score,
-                        rel.indirect_score,
+                        rel.propagated_score,
                         rel.total_score,
                         rel.metrics.get('tx_count', 0),
                         rel.metrics.get('total_volume', 0)

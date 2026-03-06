@@ -2,11 +2,20 @@ import hashlib
 import os
 import pandas as pd
 from typing import Optional
+from pathlib import Path
 
 class CacheManager:
-    def __init__(self, cache_dir: str = "cache"):
-        self.cache_dir = cache_dir
-        os.makedirs(self.cache_dir, exist_ok=True)
+    def __init__(self, cache_dir: str = None):
+        if cache_dir is None:
+            # Chemin absolu basé sur l'emplacement du fichier source
+            # Remonter de src/infrastructure/ à la racine du projet
+            src_dir = Path(__file__).parent.parent  # src/
+            project_dir = src_dir.parent  # projet/
+            cache_dir = project_dir / "cache"
+
+        self.cache_dir = Path(cache_dir)
+        self.cache_dir.mkdir(exist_ok=True)
+        print(f"[Cache] Using cache directory: {self.cache_dir}")
 
     def _get_hash(self, sql_query: str) -> str:
         # Normalize query to avoid misses due to whitespace

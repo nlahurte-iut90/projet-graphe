@@ -7,7 +7,7 @@ from src.adapters.dune import DuneAdapter
 import pandas as pd
 import math
 import time
-from typing import Tuple, List, Optional, Dict, Set
+from typing import Tuple, List, Optional, Dict, Set, Any
 from datetime import datetime
 
 from src.services.interactive_viz import InteractiveGraphVisualizer
@@ -131,6 +131,10 @@ class CorrelationService:
         """Calculate indirect relationship score via intermediate nodes."""
         paths = []
         total_score = 0.0
+
+        # Vérifier que les deux nœuds sont dans le graphe
+        if addr1.address not in self.graph or addr2.address not in self.graph:
+            return 0.0, []
 
         try:
             for path in nx.all_simple_paths(self.graph, addr1.address, addr2.address, cutoff=max_depth):
@@ -313,8 +317,8 @@ class CorrelationService:
         if main_address.address == target.address:
             return 0.0, []
 
-        # Vérifier si target est dans le graphe
-        if target.address not in self.graph:
+        # Vérifier si main_address et target sont dans le graphe
+        if main_address.address not in self.graph or target.address not in self.graph:
             return 0.0, []
 
         # Étape 1: Obtenir tous les scores directs depuis main_address
@@ -830,7 +834,10 @@ class CorrelationService:
 
         num_nodes = self.graph.number_of_nodes()
         num_edges = self.graph.number_of_edges()
-        has_path = nx.has_path(self.graph, address1.address, address2.address) or nx.has_path(self.graph, address2.address, address1.address)
+        try:
+            has_path = nx.has_path(self.graph, address1.address, address2.address) or nx.has_path(self.graph, address2.address, address1.address)
+        except nx.NodeNotFound:
+            has_path = False
 
         score = relationship.total_score if relationship else 0.0
 
@@ -845,8 +852,7 @@ class CorrelationService:
                 "notes": f"Graph built with expansion_depth={expansion_depth}, top_n={top_n}, base_tx_limit={base_tx_limit}, expansion_tx_limit={expansion_tx_limit}",
                 "has_path": has_path,
                 "direct_score": relationship.direct_score if relationship else 0.0,
-                "indirect_score": relationship.indirect_score if relationship else 0.0,
-                "propagated_score": relationship.propagated_score if relationship else 0.0,
+                "indirecte_score": relationship.propagated_score if relationship else 0.0,
                 "tx_count": relationship.metrics.get('tx_count', 0) if relationship else 0,
                 "total_volume": relationship.metrics.get('total_volume', 0) if relationship else 0,
                 "expansion_depth": expansion_depth,
@@ -861,7 +867,8 @@ class CorrelationService:
         address1: Address,
         address2: Address,
         tables: Optional[List[AddressRelationshipTable]] = None,
-        auto_open: bool = True
+        auto_open: bool = True,
+        params: Optional[Dict[str, Any]] = None
     ) -> str:
         """Crée une visualisation HTML interactive du graphe."""
         if self.graph.number_of_nodes() == 0:
@@ -877,5 +884,6 @@ class CorrelationService:
             graph=self.graph,
             main_addresses=[address1, address2],
             title=f"Ethereum Correlation: {address1.address[:10]}... vs {address2.address[:10]}...",
-            auto_open=auto_open
+            auto_open=auto_open,
+            params=params
         )
