@@ -805,18 +805,6 @@ class CorrelationService:
 
         nx.draw_networkx_labels(viz_graph, pos, labels=labels, font_size=8, font_weight='bold', font_color='black')
 
-        # Ajouter une légende pour les couleurs de score
-        from matplotlib.patches import Patch
-        legend_elements = [
-            Patch(facecolor='#ff7f0e', edgecolor='white', label='Main Address'),
-            Patch(facecolor='#28a745', edgecolor='white', label='Score ≥ 80 (Strong)'),
-            Patch(facecolor='#90ee90', edgecolor='white', label='Score 50-79 (Medium)'),
-            Patch(facecolor='#ffc107', edgecolor='white', label='Score 20-49 (Weak)'),
-            Patch(facecolor='#fd7e14', edgecolor='white', label='Score 1-19 (Very weak)'),
-            Patch(facecolor='#6c757d', edgecolor='white', label='No relation')
-        ]
-        plt.legend(handles=legend_elements, loc='upper left', fontsize=9, framealpha=0.9)
-
         plt.title(f"Transaction Graph (Individual Txs)", fontsize=14)
         plt.axis('off')
         plt.show()
