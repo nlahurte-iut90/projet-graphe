@@ -1,31 +1,14 @@
 """Scorer simplifié pour évaluer la relation entre une main address et un nœud."""
 
-from dataclasses import dataclass
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 import math
 import networkx as nx
 
-from src.domain.models import Address
+from src.services.scoring.base import SimilarityStrategy, NodeScore
 
 
-@dataclass
-class NodeScore:
-    """Résultat du scoring d'un nœud."""
-    total: float
-    activity: float
-    proximity: float
-    recency: float
-    metrics: Dict[str, Any]
-    
-    def __repr__(self) -> str:
-        return (f"NodeScore(total={self.total:.1f}, "
-                f"activity={self.activity:.1f}, "
-                f"proximity={self.proximity:.1f}, "
-                f"recency={self.recency:.1f})")
-
-
-class SimpleNodeScorer:
+class SimpleNodeScorer(SimilarityStrategy):
     """
     Scorer léger et interprétable pour la relation main_address ↔ nœud.
     
@@ -36,8 +19,17 @@ class SimpleNodeScorer:
     """
     
     def __init__(self, graph: nx.MultiDiGraph):
-        self.graph = graph
+        super().__init__(graph)
         self._edge_cache: Dict[tuple, List[Dict]] = {}
+
+    def get_name(self) -> str:
+        """Retourne le nom de la stratégie."""
+        return "SimpleNodeScorer"
+
+    def get_description(self) -> str:
+        """Retourne une description de la stratégie."""
+        return ("Scorer basé sur 3 dimensions: Activité (50%), "
+                "Proximité (30%), Récence (20%)")
     
     def score(self, main_address: str, node: str) -> NodeScore:
         """

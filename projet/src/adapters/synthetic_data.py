@@ -439,6 +439,119 @@ class SyntheticDataGenerator:
         )
 
     # =========================================================================
+    # SCÉNARIO 10: Connexion via hub (test de spécificité)
+    # =========================================================================
+    def generate_hub_intermediary(self) -> SyntheticDataset:
+        """
+        Connexion via exchange majeur - score devrait être pénalisé.
+
+        Deux adresses connectées via un hub très connecté (comme un exchange)
+        devraient avoir un score plus faible car le hub est générique.
+        """
+        addr1 = self._generate_address("0xA10")
+        addr2 = self._generate_address("0xB10")
+        hub = "0xexchange_hub_0000000000000000000000000000"
+
+        transactions = []
+        # Transactions via le hub (commun à beaucoup)
+        for _ in range(5):
+            transactions.append(self._create_transaction(addr1, hub, 1.0))
+            transactions.append(self._create_transaction(hub, addr2, 1.0))
+
+        # Ajouter d'autres connexions au hub pour simuler un hub générique
+        other_addresses = [self._generate_address(f"0xH{i}") for i in range(10)]
+        for other in other_addresses:
+            for _ in range(3):
+                transactions.append(self._create_transaction(other, hub, self.random.uniform(0.5, 5.0)))
+                transactions.append(self._create_transaction(hub, other, self.random.uniform(0.5, 5.0)))
+
+        return SyntheticDataset(
+            name="hub_intermediary",
+            description="Connexion via exchange majeur (hub)",
+            address1=addr1,
+            address2=addr2,
+            transactions_df=self._create_dataframe(transactions),
+            expected_direct_score=20.0,  # Faible car hub générique
+            expected_indirect_paths=1,
+            expected_propagation_depth=2
+        )
+
+    # =========================================================================
+    # SCÉNARIO 11: Chemins disjoints multiples (test de robustesse)
+    # =========================================================================
+    def generate_multiple_disjoint_paths(self, num_paths: int = 3) -> SyntheticDataset:
+        """
+        Plusieurs chemins indépendants entre deux adresses - score élevé.
+
+        Teste la détection de la robustesse de la connexion via
+        la multiplicité des chemins disjoints.
+        """
+        addr1 = self._generate_address("0xA11")
+        addr2 = self._generate_address("0xB11")
+
+        transactions = []
+        intermediaries = [self._generate_address(f"0xI11{i}") for i in range(num_paths)]
+
+        for inter in intermediaries:
+            # Chemin indépendant via chaque intermédiaire
+            # Transactions fortes pour chaque chemin
+            for _ in range(5):
+                transactions.append(self._create_transaction(addr1, inter, self.random.uniform(5.0, 10.0)))
+                transactions.append(self._create_transaction(inter, addr2, self.random.uniform(4.0, 8.0)))
+
+        return SyntheticDataset(
+            name="multiple_disjoint_paths",
+            description=f"{num_paths} chemins disjoints entre les adresses",
+            address1=addr1,
+            address2=addr2,
+            transactions_df=self._create_dataframe(transactions),
+            expected_direct_score=0.0,
+            expected_indirect_paths=num_paths,
+            expected_propagation_depth=2
+        )
+
+    # =========================================================================
+    # SCÉNARIO 12: Transactions temporellement coordonnées
+    # =========================================================================
+    def generate_temporal_coordination(self) -> SyntheticDataset:
+        """
+        Transactions avec cohérence temporelle forte.
+
+        Les transactions entre A et B passent par des intermédiaires
+        mais sont coordonnées dans le temps (même période).
+        """
+        addr1 = self._generate_address("0xA12")
+        addr2 = self._generate_address("0xB12")
+
+        intermediaries = [self._generate_address(f"0xT{i}") for i in range(3)]
+        transactions = []
+
+        # Toutes les transactions dans une fenêtre de 24 heures
+        base_time = datetime.now() - timedelta(days=1)
+
+        for i, inter in enumerate(intermediaries):
+            for j in range(3):
+                # Transactions coordonnées dans le temps
+                ts = base_time + timedelta(hours=i*2 + j)
+                transactions.append(self._create_transaction(
+                    addr1, inter, 5.0, timestamp=ts
+                ))
+                transactions.append(self._create_transaction(
+                    inter, addr2, 4.0, timestamp=ts + timedelta(minutes=30)
+                ))
+
+        return SyntheticDataset(
+            name="temporal_coordination",
+            description="Transactions avec forte cohérence temporelle",
+            address1=addr1,
+            address2=addr2,
+            transactions_df=self._create_dataframe(transactions),
+            expected_direct_score=0.0,
+            expected_indirect_paths=3,
+            expected_propagation_depth=2
+        )
+
+    # =========================================================================
     # GÉNÉRATION DE TOUS LES JEUX DE DONNÉES
     # =========================================================================
     def generate_all_datasets(self) -> List[SyntheticDataset]:
@@ -453,6 +566,9 @@ class SyntheticDataGenerator:
             self.generate_recency_test(),
             self.generate_volume_test(),
             self.generate_expansion_test(),
+            self.generate_hub_intermediary(),
+            self.generate_multiple_disjoint_paths(num_paths=3),
+            self.generate_temporal_coordination(),
         ]
 
 
