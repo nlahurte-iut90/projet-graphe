@@ -6,25 +6,18 @@ import math
 import networkx as nx
 
 from src.services.scoring.base import SimilarityStrategy, NodeScore
-from src.services.scoring.correlation_scorer import calculate_correlation_from_edges
 
 
 class SimpleNodeScorer(SimilarityStrategy):
     """
     Scorer léger et interprétable pour la relation main_address ↔ nœud.
-
+    
     Basé sur 3 dimensions:
-    - Activité (50%): volume, fréquence, bidirectionnalité (nouveau scoring v2.0.0)
+    - Activité (50%): volume, fréquence, bidirectionnalité
     - Proximité (30%): distance dans le graphe
     - Récence (20%): fraîcheur de la dernière transaction
-
-    Le scoring d'activité utilise l'algorithme composite à 4 composants:
-    - Volume (40%): Équilibre directionnel
-    - Fréquence (20%): Indice de Jaccard
-    - Récence (30%): Décroissance exponentielle
-    - Bidirectionnalité (10%): Détection de handshakes
     """
-
+    
     def __init__(self, graph: nx.MultiDiGraph):
         super().__init__(graph)
         self._edge_cache: Dict[tuple, List[Dict]] = {}
@@ -36,7 +29,7 @@ class SimpleNodeScorer(SimilarityStrategy):
     def get_description(self) -> str:
         """Retourne une description de la stratégie."""
         return ("Scorer basé sur 3 dimensions: Activité (50%), "
-                "Proximité (30%), Récence (20%) - avec scoring composite v2.0.0")
+                "Proximité (30%), Récence (20%)")
     
     def score(self, main_address: str, node: str) -> NodeScore:
         """
@@ -97,25 +90,32 @@ class SimpleNodeScorer(SimilarityStrategy):
     
     def _calc_activity(self, u: str, v: str) -> float:
         """
-        Score d'activité basé sur le nouveau scoring composite v2.0.0.
-
-        Utilise calculate_correlation_from_edges avec:
-        - Volume (40%): Équilibre directionnel des flux
-        - Fréquence (20%): Indice de Jaccard avec intensité logarithmique
-        - Récence (30%): Décroissance exponentielle par bloc
-        - Bidirectionnalité (10%): Détection de handshakes synchronisés
-
-        Le résultat est converti de [0,1] à [0,100] pour compatibilité.
+        Score d'activité basé sur volume, fréquence et bidirectionnalité.
+        
+        Formule: 100 * (0.6 * volume_score + 0.3 * freq_score + 0.1 * bidirectional)
         """
         edges = self._get_all_edges(u, v)
         if not edges:
             return 0.0
-
-        # Utiliser le nouveau correlation scorer
-        result = calculate_correlation_from_edges(u, v, edges)
-
-        # Convertir [0,1] en [0,100] pour compatibilité avec l'ancien système
-        return result.final_score * 100
+        
+        # Volume total
+        total_volume = sum(e.get('weight', 0) for e in edges)
+        tx_count = len(edges)
+        
+        # Bidirectionnel?
+        has_uv = any(e['from'] == u for e in edges)
+        has_vu = any(e['from'] == v for e in edges)
+        bidirectional_ratio = 1.0 if (has_uv and has_vu) else 0.5
+        
+        # Volume: log10 normalisé (0-1), saturé à 1000 ETH
+        # log10(1000 + 1) / 3 ≈ 1.0
+        volume_score = min(math.log10(total_volume + 1) / 3, 1.0)
+        
+        # Fréquence: plafonnée à 10 transactions
+        freq_score = min(tx_count / 10, 1.0)
+        
+        activity = 100 * (0.6 * volume_score + 0.3 * freq_score + 0.1 * bidirectional_ratio)
+        return activity
     
     def _calc_proximity(self, source: str, target: str) -> float:
         """
@@ -214,20 +214,13 @@ class SimpleNodeScorer(SimilarityStrategy):
     def _get_metrics(self, u: str, v: str) -> Dict[str, Any]:
         """Extrait les métriques brutes pour debug."""
         edges = self._get_all_edges(u, v)
-
-        # Récupérer les métriques détaillées du nouveau scorer
-        result = calculate_correlation_from_edges(u, v, edges)
-
+        
         return {
             'tx_count': len(edges),
             'total_volume': sum(e.get('weight', 0) for e in edges),
             'has_incoming': any(e['from'] == v for e in edges),
             'has_outgoing': any(e['from'] == u for e in edges),
             'last_tx': max((e.get('time', '') for e in edges), default=None),
-            # Nouvelles métriques v2.0.0
-            'correlation_details': result.components,
-            'metadata': result.metadata,
-            'is_correlated': result.is_correlated,
         }
     
     def get_interpretation(self, score: NodeScore) -> str:

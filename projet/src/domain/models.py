@@ -3,37 +3,6 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
-@dataclass
-class TxRecord:
-    """Schéma strict d'une transaction Ethereum pour le scoring de corrélation."""
-    tx_hash: str
-    from_address: str
-    to_address: str
-    value_eth: float
-    block_number: int
-    timestamp: int  # Unix timestamp seconds
-
-
-@dataclass
-class ScoringConfig:
-    """Configuration pondérée du scoring de corrélation."""
-    weights: Dict[str, float] = field(default_factory=lambda: {
-        "volume": 0.40,
-        "frequency": 0.20,
-        "recency": 0.30,
-        "bidirectionality": 0.10
-    })
-    recency_half_life_blocks: int = 6500  # ~30 jours @ 13s/bloc
-    min_transaction_threshold: int = 1
-    correlation_threshold: float = 0.6
-
-    def __post_init__(self):
-        """Valide que les poids somment à 1.0."""
-        total = sum(self.weights.values())
-        if abs(total - 1.0) > 0.01:
-            raise ValueError(f"Weights must sum to 1.0, got {total}")
-
-
 @dataclass(frozen=True)
 class Address:
     address: str
@@ -55,26 +24,11 @@ class Transaction:
 
 @dataclass
 class CorrelationResult:
-    """Résultat de corrélation legacy (pour compatibilité)."""
     source: Address
     target: Address
     score: float
     path: List[Address] = field(default_factory=list)
     details: dict = field(default_factory=dict)
-
-
-@dataclass
-class CorrelationScoreResult:
-    """
-    Résultat détaillé du scoring de corrélation v2.0.0.
-
-    Contient le score final, les composants individuels,
-    et les métadonnées pour l'explicabilité.
-    """
-    final_score: float  # [0.0, 1.0]
-    is_correlated: bool  # True si final_score > threshold
-    components: Dict[str, float]  # volume, frequency, recency, bidirectionality
-    metadata: Dict[str, Any]  # métriques brutes (volumes, counts, handshakes, etc.)
 
 
 @dataclass
