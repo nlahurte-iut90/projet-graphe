@@ -32,7 +32,6 @@ class RelationshipTableFormatter:
         else:
             table.add_column("Direct", justify="right", width=8)
             
-        table.add_column("Indirecte", justify="right", width=10)
         table.add_column("Total", justify="right", width=8)
         table.add_column("Tx Count", justify="right", width=8)
         table.add_column("Volume (ETH)", justify="right", width=12)
@@ -55,9 +54,6 @@ class RelationshipTableFormatter:
         tx_count = rel.metrics.get('tx_count', 0)
         volume = rel.metrics.get('total_volume', 0)
 
-        # Style pour le score propagé (bleu si significatif)
-        prop_style = "cyan" if rel.propagated_score >= 20 else "dim"
-        
         # Récupérer le breakdown si disponible
         breakdown = rel.metrics.get('score_breakdown', {})
 
@@ -66,14 +62,13 @@ class RelationshipTableFormatter:
             act_style = "green" if breakdown.get('activity', 0) >= 50 else "dim"
             prox_style = "blue" if breakdown.get('proximity', 0) >= 50 else "dim"
             rec_style = "yellow" if breakdown.get('recency', 0) >= 50 else "dim"
-            
+
             table.add_row(
                 target_short,
                 f"[{act_style}]{breakdown.get('activity', 0):.0f}[/{act_style}]",
                 f"[{prox_style}]{breakdown.get('proximity', 0):.0f}[/{prox_style}]",
                 f"[{rec_style}]{breakdown.get('recency', 0):.0f}[/{rec_style}]",
                 f"{rel.direct_score:.1f}",
-                f"[{prop_style}]{rel.propagated_score:.1f}[/{prop_style}]" if rel.propagated_score > 0 else "-",
                 f"[{score_style}]{rel.total_score:.1f}[/{score_style}]",
                 str(tx_count) if tx_count else "-",
                 f"{volume:.4f}" if volume else "-"
@@ -82,7 +77,6 @@ class RelationshipTableFormatter:
             table.add_row(
                 target_short,
                 f"{rel.direct_score:.1f}",
-                f"[{prop_style}]{rel.propagated_score:.1f}[/{prop_style}]" if rel.propagated_score > 0 else "-",
                 f"[{score_style}]{rel.total_score:.1f}[/{score_style}]",
                 str(tx_count) if tx_count else "-",
                 f"{volume:.4f}" if volume else "-"
@@ -147,8 +141,7 @@ class RelationshipTableFormatter:
 
         if rel1:
             content.append(f"[dim]From {address1.address[:15]}... perspective:[/dim]")
-            content.append(f"  Direct Score: {rel1.direct_score:.2f}")
-            content.append(f"  Indirecte Score: {rel1.propagated_score:.2f}")
+            content.append(f"  Score: {rel1.direct_score:.2f}")
             content.append(f"  Transactions: {rel1.metrics.get('tx_count', 0)}")
             content.append(f"  Volume: {rel1.metrics.get('total_volume', 0):.4f} ETH")
 
@@ -213,23 +206,18 @@ class RelationshipTableFormatter:
                 header_style="bold cyan"
             )
             table_addr1.add_column("Nœud", style="dim", min_width=20)
-            table_addr1.add_column("Direct", justify="right", width=8)
-            table_addr1.add_column("Indirecte", justify="right", width=10)
-            table_addr1.add_column("Total", justify="right", width=8)
+            table_addr1.add_column("Score", justify="right", width=8)
             table_addr1.add_column("Tx", justify="right", width=6)
             table_addr1.add_column("Volume (ETH)", justify="right", width=12)
 
             for rel in expanded_nodes_1[:limit]:
                 target_short = rel.target.address[:20] + "..."
                 score_style = self._score_color(rel.total_score)
-                prop_style = "cyan" if rel.propagated_score >= 20 else "dim"
                 tx_count = rel.metrics.get('tx_count', 0)
                 volume = rel.metrics.get('total_volume', 0)
 
                 table_addr1.add_row(
                     target_short,
-                    f"{rel.direct_score:.1f}",
-                    f"[{prop_style}]{rel.propagated_score:.1f}[/{prop_style}]" if rel.propagated_score > 0 else "-",
                     f"[{score_style}]{rel.total_score:.1f}[/{score_style}]",
                     str(tx_count) if tx_count else "-",
                     f"{volume:.4f}" if volume else "-"
@@ -245,23 +233,18 @@ class RelationshipTableFormatter:
                 header_style="bold cyan"
             )
             table_addr2.add_column("Nœud", style="dim", min_width=20)
-            table_addr2.add_column("Direct", justify="right", width=8)
-            table_addr2.add_column("Indirecte", justify="right", width=10)
-            table_addr2.add_column("Total", justify="right", width=8)
+            table_addr2.add_column("Score", justify="right", width=8)
             table_addr2.add_column("Tx", justify="right", width=6)
             table_addr2.add_column("Volume (ETH)", justify="right", width=12)
 
             for rel in expanded_nodes_2[:limit]:
                 target_short = rel.target.address[:20] + "..."
                 score_style = self._score_color(rel.total_score)
-                prop_style = "cyan" if rel.propagated_score >= 20 else "dim"
                 tx_count = rel.metrics.get('tx_count', 0)
                 volume = rel.metrics.get('total_volume', 0)
 
                 table_addr2.add_row(
                     target_short,
-                    f"{rel.direct_score:.1f}",
-                    f"[{prop_style}]{rel.propagated_score:.1f}[/{prop_style}]" if rel.propagated_score > 0 else "-",
                     f"[{score_style}]{rel.total_score:.1f}[/{score_style}]",
                     str(tx_count) if tx_count else "-",
                     f"{volume:.4f}" if volume else "-"
