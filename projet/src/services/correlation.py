@@ -2,7 +2,7 @@ import networkx as nx
 import matplotlib
 matplotlib.use('tkAgg')
 import matplotlib.pyplot as plt
-from src.domain.models import Address, CorrelationResult, RelationshipScore, AddressRelationshipTable, PathInfo, PropagatedPathInfo
+from src.domain.models import Address, CorrelationResult, RelationshipScore, AddressRelationshipTable
 from src.adapters.dune import DuneAdapter
 import pandas as pd
 import math
@@ -11,78 +11,34 @@ from typing import Tuple, List, Optional, Dict, Set, Any
 from datetime import datetime
 
 from src.services.interactive_viz import InteractiveGraphVisualizer
-from src.services.scoring import (
-    SimpleNodeScorer,
-    MultipathScorer,
-    SimRankScorer,
-    PPRScorer,
-    ReliableRouteScorer,
-    EnsembleScorer,
-    SimilarityStrategy,
-    NodeScore,
-)
+from src.services.scoring import SimpleNodeScorer
 
 
 class CorrelationService:
     """
-    Service de corrélation avec support pour multiple algorithmes de scoring.
+    Service de corrélation utilisant le SimpleNodeScorer.
 
-    Algorithmes disponibles:
-    - 'simple': Scorer basique (activité, proximité, récence)
-    - 'multipath': Connectivité et résistance effective
-    - 'simrank': Similarité structurelle SimRank
-    - 'ppr': Personalized PageRank
-    - 'reliable': Routes fiables avec cohérence temporelle
-    - 'ensemble': Combinaison adaptative de tous les scorers
+    Score basé sur 3 dimensions: Activité (50%), Proximité (30%), Récence (20%)
     """
 
-    def __init__(
-        self,
-        dune_adapter: DuneAdapter,
-        scoring_strategy: str = 'simple',
-        use_advanced_scoring: bool = False
-    ):
+    def __init__(self, dune_adapter: DuneAdapter):
         """
         Initialise le service de corrélation.
 
         Args:
             dune_adapter: Adaptateur pour récupérer les transactions
-            scoring_strategy: Stratégie de scoring ('simple', 'multipath', 'simrank', 'ppr', 'reliable', 'ensemble')
-            use_advanced_scoring: Si True, calcule tous les scores avancés en plus du principal
         """
         self.dune_adapter = dune_adapter
         self.graph = nx.MultiDiGraph()
         self._table1: Optional[AddressRelationshipTable] = None
         self._table2: Optional[AddressRelationshipTable] = None
+        self._scorer: Optional[SimpleNodeScorer] = None
 
-        # Configuration du scoring
-        self.scoring_strategy = scoring_strategy
-        self.use_advanced_scoring = use_advanced_scoring
-        self._scorers: Dict[str, SimilarityStrategy] = {}
-
-    def _initialize_scorers(self):
-        """Initialise tous les scorers pour le graphe actuel."""
-        self._scorers = {
-            'simple': SimpleNodeScorer(self.graph),
-            'multipath': MultipathScorer(self.graph),
-            'simrank': SimRankScorer(self.graph),
-            'ppr': PPRScorer(self.graph),
-            'reliable': ReliableRouteScorer(self.graph),
-            'ensemble': EnsembleScorer(self.graph),
-        }
-
-    def _get_scorer(self, strategy: str = None) -> SimilarityStrategy:
-        """Retourne le scorer pour la stratégie donnée."""
-        if not self._scorers:
-            self._initialize_scorers()
-
-        strategy = strategy or self.scoring_strategy
-
-        if strategy not in self._scorers:
-            print(f"[CorrelationService] Unknown strategy '{strategy}', falling back to 'simple'")
-            strategy = 'simple'
-
-        return self._scorers[strategy]
+    def _get_scorer(self) -> SimpleNodeScorer:
+        """Retourne le scorer simple pour le graphe actuel."""
+        if self._scorer is None:
+            self._scorer = SimpleNodeScorer(self.graph)
+        return self._scorer
 
     def _add_transactions_to_graph(self, df: pd.DataFrame) -> Set[str]:
         """Helper pour ajouter un DataFrame de transactions au graphe.
@@ -171,367 +127,22 @@ class CorrelationService:
         except Exception:
             return 0.5
 
-    def _calculate_direct_score(
-        self,
-        addr1: Address,
-        addr2: Address,
-        strategy: str = None
-    ) -> Tuple[float, dict]:
-        """
-        Calcule le score de relation direct avec le scorer configuré.
-
-        Args:
-            addr1: Adresse source
-            addr2: Adresse cible
-            strategy: Stratégie de scoring (None = utiliser self.scoring_strategy)
-
-        Returns:
-            Tuple de (score, métriques)
-        """
-        scorer = self._get_scorer(strategy)
-        node_score = scorer.score(addr1.address, addr2.address)
-
-        # Conserver les métriques brutes pour compatibilité
-        metrics = self._get_transaction_metrics(addr1.address, addr2.address) or {}
-        metrics['node_score_breakdown'] = {
-            'activity': node_score.activity,
-            'proximity': node_score.proximity,
-            'recency': node_score.recency
-        }
-        metrics['scorer_name'] = scorer.get_name()
-
-        return node_score.total, metrics
-
-    def _calculate_advanced_scores(
-        self,
-        addr1: Address,
-        addr2: Address
-    ) -> Dict[str, float]:
-        """
-        Calcule tous les scores avancés pour une paire d'adresses.
-
-        Returns:
-            Dict avec les scores de chaque algorithme
-        """
-        if not self._scorers:
-            self._initialize_scorers()
-
-        advanced_scores = {}
-
-        for name, scorer in self._scorers.items():
-            if name == self.scoring_strategy:
-                continue  # Skip le scorer principal déjà calculé
-
-            try:
-                score = scorer.score(addr1.address, addr2.address)
-                advanced_scores[name] = {
-                    'total': score.total,
-                    'activity': score.activity,
-                    'proximity': score.proximity,
-                    'recency': score.recency,
-                    'metrics': score.metrics
-                }
-            except Exception as e:
-                print(f"[CorrelationService] Error calculating {name} score: {e}")
-                advanced_scores[name] = {
-                    'total': 0.0,
-                    'activity': 0.0,
-                    'proximity': 0.0,
-                    'recency': 0.0,
-                    'error': str(e)
-                }
-
-        return advanced_scores
-
-    def _calculate_indirect_score(self, addr1: Address, addr2: Address, max_depth: int = 3) -> Tuple[float, List[PathInfo]]:
-        """Calculate indirect relationship score via intermediate nodes."""
-        paths = []
-        total_score = 0.0
-
-        # Vérifier que les deux nœuds sont dans le graphe
-        if addr1.address not in self.graph or addr2.address not in self.graph:
-            return 0.0, []
-
-        try:
-            for path in nx.all_simple_paths(self.graph, addr1.address, addr2.address, cutoff=max_depth):
-                if len(path) <= 2:
-                    continue
-
-                path_score = 1.0
-                decay = 0.5 ** (len(path) - 2)
-
-                for i in range(len(path) - 1):
-                    edge_metrics = self._get_transaction_metrics(path[i], path[i+1])
-                    if edge_metrics:
-                        edge_score = min(math.log10(edge_metrics['total_volume'] + 1) / 3, 1.0)
-                        path_score *= edge_score
-                    else:
-                        path_score *= 0.1
-
-                path_score *= decay * 100
-                total_score += path_score
-
-                paths.append(PathInfo(
-                    nodes=[Address(a) for a in path],
-                    score=path_score,
-                    depth=len(path) - 1
-                ))
-        except nx.NetworkXNoPath:
-            pass
-
-        try:
-            for path in nx.all_simple_paths(self.graph, addr2.address, addr1.address, cutoff=max_depth):
-                if len(path) <= 2:
-                    continue
-
-                path_score = 1.0
-                decay = 0.5 ** (len(path) - 2)
-
-                for i in range(len(path) - 1):
-                    edge_metrics = self._get_transaction_metrics(path[i], path[i+1])
-                    if edge_metrics:
-                        edge_score = min(math.log10(edge_metrics['total_volume'] + 1) / 3, 1.0)
-                        path_score *= edge_score
-                    else:
-                        path_score *= 0.1
-
-                path_score *= decay * 100
-                total_score += path_score
-
-                paths.append(PathInfo(
-                    nodes=[Address(a) for a in reversed(path)],
-                    score=path_score,
-                    depth=len(path) - 1
-                ))
-        except nx.NetworkXNoPath:
-            pass
-
-        return min(total_score, 100.0), paths
-
-    def _calculate_edge_propagation_weight(self, from_addr: str, to_addr: str) -> float:
-        """
-        Calcule le poids de propagation entre deux adresses.
-
-        Basé sur:
-        - Nombre de transactions
-        - Volume total échangé
-        - Récence des transactions
-
-        Returns:
-            Poids entre 0.0 et 1.0
-        """
-        metrics = self._get_transaction_metrics(from_addr, to_addr)
-        if not metrics:
-            return 0.0
-
-        # Normaliser les métriques
-        tx_count = metrics['tx_count']
-        volume = metrics['total_volume']
-        timestamps = metrics.get('timestamps', [])
-
-        # Score de fréquence (0-1): asymptotique vers 1
-        freq_score = min(tx_count / (tx_count + 5), 1.0)
-
-        # Score de volume (0-1): logarithmique
-        vol_score = min(math.log10(volume + 1) / 3, 1.0) if volume > 0 else 0
-
-        # Score de récence (0-1)
-        recency_score = self._calculate_recency_score(timestamps)
-
-        # Poids combiné (priorité au volume, puis fréquence)
-        weight = (0.5 * vol_score + 0.3 * freq_score + 0.2 * recency_score)
-
-        return weight
-
-    def _propagate_score_recursive(
-        self,
-        current_node: str,
-        target_node: str,
-        main_address: Address,
-        current_score: float,
-        current_depth: int,
-        max_depth: int,
-        visited: Set[str],
-        path: List[str],
-        path_scores: List[Tuple[str, float]],
-        all_paths: List[Tuple[List[str], float, List[Tuple[str, float]]]]
-    ) -> None:
-        """
-        DFS récursif pour propager les scores.
-
-        Args:
-            current_node: Nœud actuel dans la traversée
-            target_node: Nœud cible final
-            main_address: Adresse principale (pour le calcul des scores directs)
-            current_score: Score accumulé jusqu'à ce nœud
-            current_depth: Profondeur actuelle dans l'arbre de propagation
-            max_depth: Profondeur maximale autorisée
-            visited: Nœuds déjà visités (évite les cycles)
-            path: Chemin actuel depuis main_address
-            path_scores: Scores locaux pour chaque nœud du chemin
-            all_paths: Liste accumulée de (chemin, score, path_scores)
-        """
-        # On a atteint la cible avec un chemin valide (au moins 1 hop)
-        if current_node == target_node and len(path) > 1:
-            all_paths.append((path.copy(), current_score, path_scores.copy()))
-            return
-
-        if current_depth >= max_depth:
-            return
-
-        # Explorer les voisins
-        for neighbor in self.graph.successors(current_node):
-            if neighbor in visited:
-                continue
-
-            # Calculer le poids de l'arête current -> neighbor
-            edge_weight = self._calculate_edge_propagation_weight(current_node, neighbor)
-
-            # Decay plus doux que l'actuel (0.7 vs 0.5)
-            decay = 0.7 ** current_depth
-            new_score = current_score * edge_weight * decay
-
-            # Seuil minimal pour continuer (optimisation)
-            if new_score < 0.01:  # Moins de 1% de contribution
-                continue
-
-            visited.add(neighbor)
-            path.append(neighbor)
-            path_scores.append((neighbor, edge_weight))
-
-            self._propagate_score_recursive(
-                neighbor, target_node, main_address,
-                new_score, current_depth + 1, max_depth,
-                visited, path, path_scores, all_paths
-            )
-
-            path_scores.pop()
-            path.pop()
-            visited.remove(neighbor)
-
-    def _calculate_propagated_score(
-        self,
-        main_address: Address,
-        target: Address,
-        max_depth: int = 3
-    ) -> Tuple[float, List[PropagatedPathInfo]]:
-        """
-        Calcule le score par propagation depuis main_address vers target.
-
-        L'idée est que si main_address a une forte relation avec node1,
-        et node1 a une forte relation avec node2 (target),
-        alors main_address a une relation indirecte significative avec node2.
-
-        Args:
-            main_address: Adresse principale (source de la propagation)
-            target: Adresse cible
-            max_depth: Profondeur maximale de propagation
-
-        Returns:
-            Tuple de (score_propagé_total, liste des chemins de propagation)
-        """
-        if main_address.address == target.address:
-            return 0.0, []
-
-        # Vérifier si main_address et target sont dans le graphe
-        if main_address.address not in self.graph or target.address not in self.graph:
-            return 0.0, []
-
-        # Étape 1: Obtenir tous les scores directs depuis main_address
-        direct_scores = {}
-        scorer = self._get_scorer('simple')  # Utiliser le scorer simple pour la propagation
-        for neighbor in self.graph.neighbors(main_address.address):
-            node_score = scorer.score(main_address.address, neighbor)
-            if node_score.total > 0:
-                # Normaliser le score à 0-1 pour la propagation
-                direct_scores[neighbor] = node_score.total / 100.0
-
-        if not direct_scores:
-            return 0.0, []
-
-        # Étape 2: Propagation DFS depuis chaque voisin direct
-        all_contributions = []
-
-        for start_node, start_score in direct_scores.items():
-            if start_score <= 0:
-                continue
-
-            # Initialiser le DFS depuis ce nœud
-            visited = {main_address.address, start_node}
-            path = [main_address.address, start_node]
-            path_scores = [(start_node, start_score)]
-
-            self._propagate_score_recursive(
-                current_node=start_node,
-                target_node=target.address,
-                main_address=main_address,
-                current_score=start_score,
-                current_depth=1,
-                max_depth=max_depth,
-                visited=visited,
-                path=path,
-                path_scores=path_scores,
-                all_paths=all_contributions
-            )
-
-        # Étape 3: Agréger les contributions
-        if not all_contributions:
-            return 0.0, []
-
-        # Calculer le score total et créer les objets PropagatedPathInfo
-        total_score = 0.0
-        propagation_paths = []
-
-        for path_nodes, score, scores in all_contributions:
-            total_score += score
-
-            # Créer les objets Address pour le chemin
-            intermediate = [Address(a) for a in path_nodes[1:-1]]  # Exclure source et target
-
-            # Calculer le decay factor utilisé
-            decay = 0.7 ** (len(path_nodes) - 2) if len(path_nodes) > 2 else 1.0
-
-            propagation_paths.append(PropagatedPathInfo(
-                source=main_address,
-                intermediate=intermediate,
-                target=target,
-                propagated_score=score * 100,  # Remettre à l'échelle 0-100
-                path_scores=scores,
-                decay_factor=decay
-            ))
-
-        # Normaliser à 0-100
-        final_score = min(total_score * 100, 100.0)
-
-        return final_score, propagation_paths
 
     def calculate_relationship_scores(
         self,
-        main_address: Address,
-        use_advanced: bool = None
+        main_address: Address
     ) -> AddressRelationshipTable:
         """
         Génère la table des scores de relation pour une adresse principale.
 
-        Utilise le scorer configuré (scoring_strategy) pour le score principal.
-        Si use_advanced=True, calcule également tous les scores avancés.
-
         Args:
             main_address: Adresse principale
-            use_advanced: Si True, calcule tous les scores avancés (défaut: self.use_advanced_scoring)
 
         Returns:
             AddressRelationshipTable avec les scores de relation
         """
         relationships = {}
         connected_nodes = set(self.graph.nodes())
-
-        # Initialiser les scorers si nécessaire
-        if not self._scorers:
-            self._initialize_scorers()
-
-        # Déterminer si on calcule les scores avancés
-        calculate_advanced = use_advanced if use_advanced is not None else self.use_advanced_scoring
 
         # Récupérer le scorer principal
         primary_scorer = self._get_scorer()
@@ -547,85 +158,21 @@ class CorrelationService:
             direct_score = node_score.total
 
             # Récupérer les métriques détaillées
-            direct_metrics = node_score.metrics
-            direct_metrics['score_breakdown'] = {
+            metrics = node_score.metrics
+            metrics['score_breakdown'] = {
                 'activity': node_score.activity,
                 'proximity': node_score.proximity,
                 'recency': node_score.recency
             }
-            direct_metrics['scorer_used'] = self.scoring_strategy
+            metrics['scorer_used'] = 'simple'
 
-            # Scores indirect et propagé
-            indirect_score, indirect_paths = self._calculate_indirect_score(main_address, target)
-            propagated_score, propagation_paths = self._calculate_propagated_score(
-                main_address, target, max_depth=3
-            )
-
-            # Total = max des trois scores
-            total_score = max(direct_score, indirect_score, propagated_score)
-
-            # Calculer les scores avancés si demandé
-            advanced_scores = {}
-            structural_similarity = 0.0
-            multipath_score = 0.0
-            temporal_dynamics = 0.0
-            adaptive_total = 0.0
-
-            if calculate_advanced:
-                for name, scorer in self._scorers.items():
-                    if name == self.scoring_strategy:
-                        continue
-
-                    try:
-                        score = scorer.score(main_address.address, node_address)
-                        advanced_scores[name] = {
-                            'total': score.total,
-                            'activity': score.activity,
-                            'proximity': score.proximity,
-                            'recency': score.recency,
-                            'metrics': score.metrics
-                        }
-                    except Exception as e:
-                        print(f"[CorrelationService] Error calculating {name} score: {e}")
-
-                # Calculer les métriques agrégées
-                if 'simrank' in advanced_scores or 'ppr' in advanced_scores:
-                    simrank_score = advanced_scores.get('simrank', {}).get('total', 0)
-                    ppr_score = advanced_scores.get('ppr', {}).get('total', 0)
-                    structural_similarity = max(simrank_score, ppr_score)
-
-                if 'multipath' in advanced_scores:
-                    multipath_score = advanced_scores.get('multipath', {}).get('total', 0)
-
-                if 'reliable' in advanced_scores:
-                    temporal_dynamics = advanced_scores.get('reliable', {}).get('recency', 0)
-
-                # Score adaptatif = moyenne pondérée
-                all_scores = [direct_score, indirect_score, propagated_score]
-                all_scores.extend(s['total'] for s in advanced_scores.values() if 'total' in s)
-                adaptive_total = sum(all_scores) / len(all_scores) if all_scores else 0
-
-            # Créer le RelationshipScore avec tous les scores
+            # Créer le RelationshipScore avec le score direct uniquement
             rel_score = RelationshipScore(
                 source=main_address,
                 target=target,
                 direct_score=direct_score,
-                indirect_score=indirect_score,
-                propagated_score=propagated_score,
-                total_score=total_score,
-                metrics={
-                    **direct_metrics,
-                    'indirect_paths': indirect_paths,
-                    'propagation_paths': propagation_paths,
-                    'advanced_scores': advanced_scores,
-                }
+                metrics=metrics
             )
-
-            # Ajouter les scores avancés
-            rel_score.structural_similarity = structural_similarity
-            rel_score.multipath_score = multipath_score
-            rel_score.temporal_dynamics = temporal_dynamics
-            rel_score.adaptive_total = adaptive_total
 
             relationships[node_address] = rel_score
 
@@ -693,8 +240,7 @@ class CorrelationService:
         expansion_depth: int = 1,
         top_n: int = 5,
         base_tx_limit: int = 5,
-        expansion_tx_limit: int = 3,
-        use_advanced_scoring: bool = None
+        expansion_tx_limit: int = 3
     ) -> Tuple[AddressRelationshipTable, AddressRelationshipTable]:
         """
         Construit le graphe avec expansion basée sur les scores de corrélation.
@@ -706,7 +252,7 @@ class CorrelationService:
            - Sélectionne top_n nœuds avec meilleurs scores
            - Récupère leurs transactions (expansion_tx_limit)
            - Ajoute au graphe
-           - Recalcule les scores (indirects peuvent changer !)
+           - Recalcule les scores
 
         Args:
             address1: Première adresse principale
@@ -718,7 +264,6 @@ class CorrelationService:
             top_n: Nombre de nœuds à sélectionner par adresse principale
             base_tx_limit: Nombre de transactions à récupérer pour les adresses principales
             expansion_tx_limit: Nombre de transactions à récupérer pour les nœuds d'expansion
-            use_advanced_scoring: Si True, calcule tous les scores avancés
 
         Returns:
             Tuple des tables de relation finales (table1, table2)
@@ -759,11 +304,9 @@ class CorrelationService:
         print(f"[Expansion] Level 0 neighbors (from both addresses): {len(level0_neighbors)} nodes")
 
         # Calcul initial des scores
-        print(f"[Expansion] Calculating initial relationship scores (strategy='{self.scoring_strategy}')...")
-        if use_advanced_scoring:
-            print(f"[Expansion] Advanced scoring enabled - calculating all metrics")
-        self._table1 = self.calculate_relationship_scores(address1, use_advanced=use_advanced_scoring)
-        self._table2 = self.calculate_relationship_scores(address2, use_advanced=use_advanced_scoring)
+        print(f"[Expansion] Calculating initial relationship scores...")
+        self._table1 = self.calculate_relationship_scores(address1)
+        self._table2 = self.calculate_relationship_scores(address2)
 
         # Afficher les meilleurs scores du niveau 0
         top1 = self._table1.get_top_relationships(n=3)
@@ -824,10 +367,10 @@ class CorrelationService:
             print(f"[Expansion] Successful fetches: {successful_fetches}, Failed: {failed_fetches}")
             print(f"[Expansion] Newly discovered at this level: {len(newly_discovered)} nodes")
 
-            # ÉTAPE 3: RECALCUL - Les scores peuvent changer (nouveaux chemins indirects !)
+            # ÉTAPE 3: RECALCUL - Les scores peuvent changer avec les nouvelles données
             print(f"[Expansion] Recalculating relationship scores with new data...")
-            self._table1 = self.calculate_relationship_scores(address1, use_advanced=use_advanced_scoring)
-            self._table2 = self.calculate_relationship_scores(address2, use_advanced=use_advanced_scoring)
+            self._table1 = self.calculate_relationship_scores(address1)
+            self._table2 = self.calculate_relationship_scores(address2)
 
             # Afficher l'évolution
             new_top1 = self._table1.get_top_relationships(n=3)
@@ -1020,8 +563,7 @@ class CorrelationService:
         expansion_depth: int = 1,
         top_n: int = 5,
         base_tx_limit: int = 5,
-        expansion_tx_limit: int = 3,
-        use_advanced_scoring: bool = None
+        expansion_tx_limit: int = 3
     ) -> CorrelationResult:
         """
         Calcule le score de corrélation entre deux adresses avec expansion du graphe.
@@ -1033,7 +575,6 @@ class CorrelationService:
             top_n: Nombre de nœuds à sélectionner à chaque niveau
             base_tx_limit: Limite de transactions pour les adresses principales
             expansion_tx_limit: Limite de transactions pour les nœuds d'expansion
-            use_advanced_scoring: Si True, calcule tous les scores avancés
 
         Returns:
             CorrelationResult avec le score et les détails
@@ -1043,8 +584,7 @@ class CorrelationService:
             expansion_depth=expansion_depth,
             top_n=top_n,
             base_tx_limit=base_tx_limit,
-            expansion_tx_limit=expansion_tx_limit,
-            use_advanced_scoring=use_advanced_scoring
+            expansion_tx_limit=expansion_tx_limit
         )
 
         relationship = table1.get_relationship(address2)
@@ -1058,17 +598,6 @@ class CorrelationService:
 
         score = relationship.total_score if relationship else 0.0
 
-        # Préparer les détails avancés si disponibles
-        advanced_details = {}
-        if relationship and use_advanced_scoring:
-            advanced_details = {
-                "structural_similarity": relationship.structural_similarity,
-                "multipath_score": relationship.multipath_score,
-                "temporal_dynamics": relationship.temporal_dynamics,
-                "adaptive_total": relationship.adaptive_total,
-                "advanced_scores": relationship.metrics.get('advanced_scores', {}),
-            }
-
         return CorrelationResult(
             source=address1,
             target=address2,
@@ -1079,17 +608,13 @@ class CorrelationService:
                 "edges": num_edges,
                 "notes": f"Graph built with expansion_depth={expansion_depth}, top_n={top_n}, base_tx_limit={base_tx_limit}, expansion_tx_limit={expansion_tx_limit}",
                 "has_path": has_path,
-                "direct_score": relationship.direct_score if relationship else 0.0,
-                "indirecte_score": relationship.propagated_score if relationship else 0.0,
+                "score": relationship.direct_score if relationship else 0.0,
                 "tx_count": relationship.metrics.get('tx_count', 0) if relationship else 0,
                 "total_volume": relationship.metrics.get('total_volume', 0) if relationship else 0,
                 "expansion_depth": expansion_depth,
                 "top_n": top_n,
                 "base_tx_limit": base_tx_limit,
-                "expansion_tx_limit": expansion_tx_limit,
-                "scoring_strategy": self.scoring_strategy,
-                "use_advanced_scoring": use_advanced_scoring,
-                **advanced_details
+                "expansion_tx_limit": expansion_tx_limit
             }
         )
 
