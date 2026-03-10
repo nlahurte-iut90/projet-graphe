@@ -740,10 +740,23 @@ class CorrelationService:
         if df_base is None:
             print("[Expansion] WARNING: Failed to fetch base transactions, using empty graph")
             df_base = pd.DataFrame()
-        level0_discovered = self._add_transactions_to_graph(df_base)
+        self._add_transactions_to_graph(df_base)
 
         print(f"[Expansion] Level 0: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
-        print(f"[Expansion] Level 0 discovered: {len(level0_discovered)} new nodes")
+
+        # Récupérer explicitement tous les voisins des deux adresses principales
+        # (pas seulement les "nouveaux" nœuds pour éviter l'asymétrie)
+        level0_neighbors: Set[str] = set()
+        for addr in [address1.address, address2.address]:
+            if addr in self.graph:
+                level0_neighbors.update(self.graph.predecessors(addr))
+                level0_neighbors.update(self.graph.successors(addr))
+
+        # Exclure les adresses principales elles-mêmes
+        level0_neighbors.discard(address1.address)
+        level0_neighbors.discard(address2.address)
+
+        print(f"[Expansion] Level 0 neighbors (from both addresses): {len(level0_neighbors)} nodes")
 
         # Calcul initial des scores
         print(f"[Expansion] Calculating initial relationship scores (strategy='{self.scoring_strategy}')...")
@@ -764,7 +777,7 @@ class CorrelationService:
 
         # Le premier niveau d'expansion utilise les nœuds découverts au niveau 0
         # comme candidats (tous les voisins des adresses principales)
-        current_level_candidates = [Address(addr) for addr in level0_discovered]
+        current_level_candidates = [Address(addr) for addr in level0_neighbors]
 
         for level in range(1, expansion_depth):
             print(f"\n[Expansion] === LEVEL {level} (Expansion {level}/{expansion_depth - 1}) ===")
