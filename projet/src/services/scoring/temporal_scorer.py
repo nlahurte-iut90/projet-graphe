@@ -279,21 +279,18 @@ class TemporalScorer(SimilarityStrategy):
         if v_total <= 0 or v_ref <= 0:
             return 0.0
 
-        # Normalisation logarithmique améliorée
-        # Utiliser ln(v) au lieu de ln(1+v) pour mieux distinguer les petits volumes
-        # mais avec protection contre les valeurs négatives
-        log_v_total = math.log(max(v_total, 0.0001))  # Protection pour valeurs très petites
-        log_v_ref = math.log(max(v_ref, 0.0001))
-
-        # Volume factor avec protection pour micro-volumes
-        if v_total < 0.01:  # Moins de 0.01 ETH
-            # Échelle linéaire pour les micro-volumes
-            volume_factor = min(v_total / 0.01 * 0.3, 0.3)  # Max 30% pour micro-volumes
+        # Volume factor - échelle adaptative selon le volume de référence
+        if v_total < 0.00001:  # Moins de 0.00001 ETH (10e-5)
+            # Micro-volumes: échelle linéaire très sensible
+            volume_factor = min(v_total / max(v_ref, 0.00001), 1.0)
+        elif v_ref < 0.01:
+            # Petits volumes: échelle linéaire
+            volume_factor = min(v_total / max(v_ref, 0.00001), 1.0)
         elif v_ref < 1.0:
-            # Pour les petits volumes relatifs, utiliser une échelle linéaire plus douce
-            volume_factor = min(v_total / max(v_ref, 0.1), 1.0)
+            # Volumes moyens: échelle semi-linéaire
+            volume_factor = min(v_total / v_ref, 1.0)
         else:
-            # Échelle logarithmique standard pour les gros volumes
+            # Gros volumes: échelle logarithmique
             volume_factor = min(
                 math.log(1 + v_total) / math.log(1 + v_ref),
                 1.0
@@ -743,9 +740,18 @@ class TemporalScorer(SimilarityStrategy):
             if v_ref < 0.001:
                 v_ref = max(v_ref, max(volumes) * 0.5)
 
-        # Valeur minimum adaptée aux données
-        min_v_ref = max(volumes) * 0.1 if volumes else 0.001
-        self._ref_stats_cache[main_address] = {'v_ref': max(v_ref, min_v_ref)}
+        # Pour les micro-volumes, utiliser le max réel comme référence
+        # mais garantir une valeur minimale pour éviter la division par zéro
+        if not volumes:
+            v_ref = 1.0
+        elif max(volumes) < 0.001:
+            # Très petits volumes: utiliser le max comme référence
+            v_ref = max(volumes)
+        else:
+            # Normal: utiliser le percentile avec un minimum raisonnable
+            v_ref = max(v_ref, max(volumes) * 0.01)
+
+        self._ref_stats_cache[main_address] = {'v_ref': max(v_ref, 0.00001)}
         return self._ref_stats_cache[main_address]['v_ref']
 
     def _approximate_block_number(self, timestamp: Any) -> Optional[int]:
