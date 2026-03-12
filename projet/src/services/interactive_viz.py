@@ -10,6 +10,7 @@ import networkx as nx
 from pyvis.network import Network
 
 from src.domain.models import Address, AddressRelationshipTable
+from src.infrastructure.price_service import get_price_service
 
 
 class InteractiveGraphVisualizer:
@@ -32,6 +33,7 @@ class InteractiveGraphVisualizer:
         self.base_output_dir.mkdir(exist_ok=True)
         self.output_dir: Optional[Path] = None  # Sera défini à chaque visualize()
         self.tables: Dict[str, AddressRelationshipTable] = {}
+        self.price_service = get_price_service()
 
     def set_relationship_tables(self, tables: List[AddressRelationshipTable]):
         """Configure les tables de relation."""
@@ -57,22 +59,55 @@ class InteractiveGraphVisualizer:
         tx_count: int,
         total_volume: float,
         relationship_scores: Dict[str, float],
-        main_addresses: List[Address]
+        main_addresses: List[Address],
+        relationship_details: Optional[Dict[str, Dict]] = None
     ) -> str:
-        """Construit le tooltip pour un nœud - format simple texte."""
+        """Construit le tooltip pour un nœud avec les dimensions temporelles."""
+        # Volume en EUR
+        volume_eur = self.price_service.eth_to_eur(total_volume)
+        if volume_eur is not None:
+            if volume_eur >= 1000:
+                volume_eur_str = f"{volume_eur:,.0f} €".replace(",", " ")
+            else:
+                volume_eur_str = f"{volume_eur:.2f} €"
+            volume_str = f"{total_volume:.4f} ETH (~{volume_eur_str})"
+        else:
+            volume_str = f"{total_volume:.4f} ETH"
+
         lines = [
             f"Address: {node_id}",
             f"Type: {'MAIN' if is_main else 'CONNECTED'}",
             f"Transactions: {tx_count}",
-            f"Volume: {total_volume:.4f} ETH",
+            f"Volume: {volume_str}",
             "",
-            "Relationship Scores:",
+            "Relationship Scores (Temporal):",
         ]
 
         for main_addr in main_addresses:
             score = relationship_scores.get(main_addr.address, 0)
             short = f"{main_addr.address[:10]}..."
             lines.append(f"  {short}: {score:.1f}")
+
+            # Ajouter les détails temporels si disponibles
+            if relationship_details and main_addr.address in relationship_details:
+                details = relationship_details[main_addr.address]
+                breakdown = details.get('score_breakdown', {})
+                if breakdown:
+                    # Afficher les dimensions temporelles en pourcentage (×100)
+                    intensite = breakdown.get('intensite', 0) * 100
+                    recence = breakdown.get('recence', 0) * 100
+                    synchronie = breakdown.get('synchronie', 0) * 100
+                    equilibre = breakdown.get('equilibre', 0) * 100
+                    lines.append(f"    └─ Intensité: {intensite:.2f}")
+                    lines.append(f"    └─ Récence: {recence:.2f}")
+                    lines.append(f"    └─ Synchronie: {synchronie:.2f}")
+                    lines.append(f"    └─ Équilibre: {equilibre:.2f}")
+                    if 'interaction' in breakdown:
+                        interaction = breakdown.get('interaction', 0) * 100
+                        lines.append(f"    └─ Interaction: {interaction:.2f}")
+
+                confidence = details.get('confidence', 'low')
+                lines.append(f"    └─ Confiance: {confidence}")
 
         if is_main:
             lines.append("")
@@ -81,10 +116,23 @@ class InteractiveGraphVisualizer:
         return "\n".join(lines)
 
     def _build_edge_tooltip(self, tx_hash: str, value: float, value_wei: int, timestamp: str) -> str:
-        """Construit le tooltip pour une transaction."""
+        """Construit le tooltip pour une transaction avec conversion EUR."""
+        # Conversion EUR
+        value_eur = self.price_service.eth_to_eur(value)
+        if value_eur is not None:
+            if value_eur >= 1000:
+                eur_str = f"{value_eur:,.0f} €".replace(",", " ")
+            elif value_eur >= 1:
+                eur_str = f"{value_eur:.2f} €"
+            else:
+                eur_str = f"{value_eur:.4f} €"
+            value_str = f"{value:.6f} ETH (~{eur_str})"
+        else:
+            value_str = f"{value:.6f} ETH"
+
         return f"""Transaction
 Hash: {tx_hash}
-Value: {value:.6f} ETH
+Value: {value_str}
 Wei: {value_wei:,}
 Time: {timestamp}"""
 
@@ -123,22 +171,32 @@ Time: {timestamp}"""
                 total_volume += data.get('weight', 0)
                 tx_count += 1
 
-            # Scores - pour chaque nœud, stocker le score de relation avec chaque adresse principale
+            # Scores et détails - pour chaque nœud, stocker le score de relation avec chaque adresse principale
             relationship_scores = {}
+            relationship_details = {}
             for main_addr in main_addresses:
                 score = 0.0
+                details = {}
                 if main_addr.address in self.tables:
                     table = self.tables[main_addr.address]
                     rel = table.get_relationship(Address(node_id))
                     if rel:
                         score = rel.total_score
+                        details = {
+                            'direct_score': rel.direct_score,
+                            'indirect_score': rel.indirect_score,
+                            'confidence': rel.confidence,
+                            'score_breakdown': rel.metrics.get('score_breakdown', {})
+                        }
                 relationship_scores[main_addr.address] = score
+                relationship_details[main_addr.address] = details
 
-            # Couleur - par défaut tous les nœuds secondaires sont gris
+            # Couleur selon le score le plus élevé
             if is_main:
                 color = self.MAIN_NODE_COLOR
             else:
-                color = self.SCORE_COLORS["none"]
+                max_score = max(relationship_scores.values()) if relationship_scores else 0
+                color = self._get_score_color(max_score)
 
             # Label
             if is_main:
@@ -147,10 +205,10 @@ Time: {timestamp}"""
             else:
                 label = f"{node_id[:6]}...{node_id[-4:]}"
 
-            # Tooltip simple (texte seul)
+            # Tooltip avec dimensions temporelles
             title = self._build_node_tooltip(
                 node_id, is_main, tx_count, total_volume,
-                relationship_scores, main_addresses
+                relationship_scores, main_addresses, relationship_details
             )
 
             nodes.append({

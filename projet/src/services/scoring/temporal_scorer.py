@@ -175,12 +175,14 @@ class TemporalScorer(SimilarityStrategy):
 
         # Compatibilité avec le format attendu par table_formatter
         # score_breakdown utilise les noms legacy (activity, proximity, recency)
+        # ET les noms temporels en français pour l'affichage
         score_breakdown = {
             'activity': round(direct_components['s_intensite'] * 100, 2),  # Intensité -> Activity
             'proximity': round(direct_components['s_sync'] * 100, 2),      # Synchronie -> Proximity
             'recency': round(direct_components['s_recence'] * 100, 2),     # Récence -> Recency
-            # Dimensions spécifiques au TemporalScorer
+            # Dimensions spécifiques au TemporalScorer (noms français pour affichage)
             'intensite': round(direct_components['s_intensite'], 4),
+            'recence': round(direct_components['s_recence'], 4),
             'synchronie': round(direct_components['s_sync'], 4),
             'equilibre': round(direct_components['s_equilibre'], 4),
             'interaction': round(0.05 * direct_components['s_direct'] * indirect_score, 4),
