@@ -278,7 +278,13 @@ def run_analysis(console: Console, params: dict):
             html_path = correlation_service.visualize_interactive(
                 address1, address2,
                 tables=[table1, table2],
-                auto_open=params.get('auto_open_browser', False)
+                auto_open=params.get('auto_open_browser', False),
+                params={
+                    'expansion_depth': params['expansion_depth'],
+                    'top_n': params['top_n'],
+                    'base_tx_limit': params['base_tx_limit'],
+                    'expansion_tx_limit': params['expansion_tx_limit'],
+                }
             )
             console.print(f"  [green]✓[/green] Interactif: [dim]{html_path}[/dim]")
         except Exception as e:

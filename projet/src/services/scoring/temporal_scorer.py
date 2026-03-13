@@ -1,0 +1,856 @@
+"""Scorer unifié basé sur l'analyse de corrélation temporelle."""
+
+import math
+import heapq
+from dataclasses import dataclass, field
+from datetime import datetime
+from typing import Dict, Any, List, Optional, Tuple, Set
+from collections import defaultdict
+
+import networkx as nx
+
+from src.services.scoring.base import SimilarityStrategy, NodeScore
+
+
+@dataclass
+class TemporalScorerConfig:
+    """Configuration pour TemporalScorer.
+
+    Paramètres calibrés selon la spécification formelle :
+    - lambda_rec: demi-vie ~15 jours (4500 blocs) -> ln(2)/4500 ≈ 0.000154
+    - lambda_chain: atténuation temporelle par saut
+    - theta: facteur d'amortissement Katz (0.4)
+    - rho: sévérité conservation volume (1.5)
+    - delta_t_blocks: fenêtre de synchronie temporelle (±100 blocs)
+    - tau: constante de saturation fréquentielle (20.0)
+    """
+    lambda_rec: float = 0.000154      # Décroissance récence (demi-vie 15j)
+    lambda_chain: float = 0.0001      # Décroissance temporelle chaîne
+    theta: float = 0.7                # Atténuation profondeur Katz (0.7^depth: 0.7, 0.49, 0.34... moins agressif)
+    rho: float = 1.5                  # Sévérité conservation volume
+    delta_t_blocks: int = 100         # Fenêtre synchronie (±100 blocs)
+    max_degree_explore: int = 100     # Early stopping hubs
+    k_max: int = 5                    # Profondeur max recherche (augmenté pour supporter expansion_depth > 2)
+    v_percentile_ref: float = 90.0    # Percentile pour normalisation volume (réduit pour plus de sensibilité)
+    tau: float = 15.0                 # Constante saturation (augmenté pour moins de saturation rapide)
+    # Paramètres de normalisation du volume (P1-003)
+    volume_normalization_mode: str = "relative"  # "absolute" ou "relative"
+    absolute_v_ref: float = 100.0     # Référence fixe pour mode absolu (100 ETH)
+    max_paths: int = 500              # Limite de chemins pour indirect
+    epsilon: float = 1e-9             # Précision numérique
+    # Paramètres sigmoïde pour propagation bien différenciée
+    kappa_sigmoid: float = 6.0        # Moins raide = moins de compression des scores
+    tau_median_ref: float = 0.05      # Médiane plus haute = meilleure sensibilité aux faibles contributions
+
+
+class TemporalScorer(SimilarityStrategy):
+    """
+    Scorer unifié basé sur l'analyse de corrélation temporelle.
+
+    Algorithme :
+    1. Score Direct (SD) = 0.50×S_intensite + 0.25×S_recence + 0.15×S_sync + 0.10×S_equilibre
+    2. Score Indirect (SI) = Katz temporel avec conservation progressive
+    3. Score Total = w_dir×SD + w_ind×SI + 0.05×SD×SI + bonus_communaute
+
+    Les poids w_dir/w_ind sont dynamiques selon le nombre de transactions directes.
+    """
+
+    # Ethereum constants
+    ETH_BLOCK_TIME = 12               # Secondes par bloc
+    ETH_GENESIS_TIMESTAMP = 1438269970  # Timestamp bloc 0
+
+    # Poids pour le score direct (selon spécification formelle)
+    # S_direct = 0.50*I + 0.25*R + 0.15*S + 0.10*E
+    W_INTENSITE = 0.50
+    W_RECENCE = 0.25
+    W_SYNC = 0.15
+    W_EQUILIBRE = 0.10
+
+    def __init__(self, graph: nx.MultiDiGraph, config: Optional[TemporalScorerConfig] = None):
+        super().__init__(graph)
+        self.config = config or TemporalScorerConfig()
+        # Cache pour les stats de référence par adresse principale
+        self._ref_stats_cache: Dict[str, Dict] = {}
+        # Cache pour les blocs courants estimés
+        self._current_block: Optional[int] = None
+        # Snapshot du graphe pour détecter les changements
+        self._graph_snapshot = self._compute_graph_hash()
+
+    def _compute_graph_hash(self) -> str:
+        """Calcule un hash simple du graphe pour détecter les changements."""
+        edges_str = str(sorted(self.graph.edges(data=True), key=lambda x: (x[0], x[1])))
+        return str(hash(edges_str))
+
+    def _is_cache_valid(self) -> bool:
+        """Vérifie si le cache correspond au graphe actuel."""
+        current_hash = self._compute_graph_hash()
+        return current_hash == self._graph_snapshot
+
+    def get_name(self) -> str:
+        """Retourne le nom de la stratégie."""
+        return "TemporalScorer"
+
+    def get_description(self) -> str:
+        """Retourne une description de la stratégie."""
+        return (
+            "Scorer unifié basé sur l'analyse temporelle: "
+            "intensité (40%), équilibre (25%), récence (20%), synchronie (15%). "
+            "Score indirect via Katz temporel avec conservation de volume."
+        )
+
+    def score(self, main_address: str, node: str) -> NodeScore:
+        """
+        Calcule le score de similarité entre main_address et node.
+
+        Args:
+            main_address: Adresse principale de référence
+            node: Nœud cible à évaluer
+
+        Returns:
+            NodeScore avec les dimensions temporelles
+        """
+        # Invalider le cache si le graphe a changé
+        if not self._is_cache_valid():
+            self._ref_stats_cache.clear()
+            self._current_block = None
+            self._graph_snapshot = self._compute_graph_hash()
+
+        # Normaliser les adresses (Ethereum addresses are case-insensitive)
+        main_address = main_address.lower()
+        node = node.lower()
+
+        # Cas trivial: adresse principale elle-même
+        if main_address == node:
+            return NodeScore(
+                total=100.0,
+                direct=1.0,
+                indirect=0.0,
+                intensite=1.0,
+                recence=1.0,
+                synchronie=1.0,
+                equilibre=1.0,
+                interaction=0.0,
+                confidence="high",
+                metrics={"self": True}
+            )
+
+        # Créer un mapping des adresses en minuscules vers les adresses originales
+        node_map = {n.lower(): n for n in self.graph.nodes()}
+
+        # Vérifier que les nœuds existent dans le graphe
+        if main_address not in node_map or node not in node_map:
+            return NodeScore(
+                total=0.0,
+                direct=0.0,
+                indirect=0.0,
+                confidence="low",
+                metrics={"error": "nodes not in graph"}
+            )
+
+        main_orig = node_map[main_address]
+        node_orig = node_map[node]
+
+        # Calcul du score direct
+        direct_components = self._compute_direct_score(main_orig, node_orig)
+
+        # Calcul du score indirect (Katz temporel)
+        indirect_score = self._compute_indirect_score(main_orig, node_orig)
+
+        # Combinaison en score total
+        total_score = self._compute_total_score(
+            direct_components,
+            indirect_score,
+            direct_components.get('tx_count', 0)
+        )
+
+        # Détermination de la confiance
+        confidence = self._determine_confidence(
+            direct_components.get('tx_count', 0),
+            direct_components.get('v_total', 0)
+        )
+
+        # Classification du score direct
+        classification = self._classify_score(direct_components['s_direct'])
+
+        # Compatibilité avec le format attendu par table_formatter
+        # score_breakdown utilise les noms legacy (activity, proximity, recency)
+        # ET les noms temporels en français pour l'affichage
+        score_breakdown = {
+            'activity': round(direct_components['s_intensite'] * 100, 2),  # Intensité -> Activity
+            'proximity': round(direct_components['s_sync'] * 100, 2),      # Synchronie -> Proximity
+            'recency': round(direct_components['s_recence'] * 100, 2),     # Récence -> Recency
+            # Dimensions spécifiques au TemporalScorer (noms français pour affichage)
+            'intensite': round(direct_components['s_intensite'], 4),
+            'recence': round(direct_components['s_recence'], 4),
+            'synchronie': round(direct_components['s_sync'], 4),
+            'equilibre': round(direct_components['s_equilibre'], 4),
+            'interaction': round(0.05 * direct_components['s_direct'] * indirect_score, 4),
+        }
+
+        return NodeScore(
+            total=round(total_score, 2),
+            direct=round(direct_components['s_direct'], 4),
+            indirect=round(indirect_score, 4),
+            intensite=round(direct_components['s_intensite'], 4),
+            recence=round(direct_components['s_recence'], 4),
+            synchronie=round(direct_components['s_sync'], 4),
+            equilibre=round(direct_components['s_equilibre'], 4),
+            interaction=round(0.05 * direct_components['s_direct'] * indirect_score, 4),
+            confidence=confidence,
+            metrics={
+                # Clés pour table_formatter (compatibilité)
+                'tx_count': direct_components.get('tx_count', 0),
+                'total_volume': direct_components.get('v_total', 0),
+                # Clés internes détaillées
+                'v_out': direct_components.get('v_out', 0),
+                'v_in': direct_components.get('v_in', 0),
+                'v_total': direct_components.get('v_total', 0),
+                'n_out': direct_components.get('n_out', 0),
+                'n_in': direct_components.get('n_in', 0),
+                'n_total': direct_components.get('tx_count', 0),
+                'v_ref': direct_components.get('v_ref', 0),
+                'w_direct': direct_components.get('w_direct', 0.7),
+                'w_indirect': direct_components.get('w_indirect', 0.25),
+                'paths_found': direct_components.get('paths_found', 0),
+                'classification': classification,
+                'score_breakdown': score_breakdown,
+            }
+        )
+
+    def _compute_direct_score(self, main_address: str, node: str) -> Dict[str, float]:
+        """
+        Calcule les 4 composantes du score direct.
+
+        Returns:
+            Dict avec s_intensite, s_recence, s_sync, s_equilibre, s_direct
+        """
+        # Extraction des transactions
+        tx_out = self._get_tx_out(main_address, node)
+        tx_in = self._get_tx_in(main_address, node)
+
+        # Agrégation des volumes et comptages
+        v_out = sum(tx.get("weight", 0) for tx in tx_out)
+        v_in = sum(tx.get("weight", 0) for tx in tx_in)
+        v_total = v_out + v_in
+        n_out = len(tx_out)
+        n_in = len(tx_in)
+        n_total = n_out + n_in
+
+        # Valeur de référence pour normalisation (percentile 95 du volume principal)
+        v_ref = self._get_reference_volume(main_address)
+
+        # Calcul des sous-scores
+        s_intensite = self._calc_intensite(v_total, n_total, v_ref)
+        s_recence = self._calc_recence(tx_out + tx_in)
+        s_sync = self._calc_synchronie(tx_out, tx_in)
+        s_equilibre = self._calc_equilibre(v_out, v_in, v_total) if n_out > 0 and n_in > 0 else 0.0
+
+        # Score direct combiné
+        s_direct = (
+            self.W_INTENSITE * s_intensite +
+            self.W_RECENCE * s_recence +
+            self.W_SYNC * s_sync +
+            self.W_EQUILIBRE * s_equilibre
+        )
+
+        return {
+            's_intensite': s_intensite,
+            's_recence': s_recence,
+            's_sync': s_sync,
+            's_equilibre': s_equilibre,
+            's_direct': s_direct,
+            'v_out': v_out,
+            'v_in': v_in,
+            'v_total': v_total,
+            'n_out': n_out,
+            'n_in': n_in,
+            'tx_count': n_total,
+            'v_ref': v_ref,
+        }
+
+    def _calc_intensite(self, v_total: float, n_total: int, v_ref: float) -> float:
+        """
+        Calcule le score d'intensité.
+
+        S_intensite = min(ln(1 + V_total) / ln(1 + V_ref), 1.0) × (1 - exp(-N_total/τ))
+
+        Pour les micro-volumes, on utilise une échelle améliorée qui préserve
+        la sensibilité aux petits montants.
+
+        NOTE: Si v_total = 0 (transferts ERC20), on utilise uniquement le facteur
+        de fréquence avec une base minimale pour refléter l'activité.
+        """
+        # Facteur de fréquence (saturation progressive) - toujours calculé
+        freq_factor = 1.0 - math.exp(-n_total / self.config.tau)
+
+        # Si pas de volume significatif (ex: transferts ERC20 avec value~0), score basé sur fréquence pure
+        # NOTE: On traite aussi les volumes < 1e-10 comme nuls car ce sont probablement des dust amounts
+        # ou des arrondis de transactions ERC20 (ex: 1.337e-15 ETH)
+        if v_total <= 0 or v_total < 1e-10:
+            # Score basé uniquement sur le nombre de transactions
+            # 1 tx = 0.10, 5 tx = 0.28, 10 tx = 0.50, 50 tx = 0.96
+            # Formule: min(n_total / (n_total + tau), 1.0) * saturation
+            tx_score = min(n_total / (n_total + self.config.tau * 0.5), 1.0)
+            return tx_score
+
+        if v_ref <= 0:
+            v_ref = 1.0
+
+        # Volume factor - échelle adaptative selon le volume de référence
+        if v_total < 0.00001:  # Moins de 0.00001 ETH (10e-5)
+            # Micro-volumes: échelle linéaire très sensible
+            volume_factor = min(v_total / max(v_ref, 0.00001), 1.0)
+        elif v_ref < 0.01:
+            # Petits volumes: échelle linéaire
+            volume_factor = min(v_total / max(v_ref, 0.00001), 1.0)
+        elif v_ref < 1.0:
+            # Volumes moyens: échelle semi-linéaire
+            volume_factor = min(v_total / v_ref, 1.0)
+        else:
+            # Gros volumes: échelle logarithmique
+            volume_factor = min(
+                math.log(1 + v_total) / math.log(1 + v_ref),
+                1.0
+            )
+
+        # Facteur de fréquence (saturation progressive)
+        freq_factor = 1.0 - math.exp(-n_total / self.config.tau)
+
+        return volume_factor * freq_factor
+
+    def _calc_recence(self, transactions: List[Dict[str, Any]]) -> float:
+        """
+        Calcule le score de récence.
+
+        Pour chaque tx: weight_tx = value × exp(-λ_rec × (current_block - block_number))
+        S_recence = sum(weights) / sum(values)
+
+        NOTE: Pour les transactions avec value=0 (ERC20), on utilise un poids
+        unitaire (1.0) pour capturer la fréquence d'interaction.
+        """
+        if not transactions:
+            return 0.0
+
+        current_block = self._get_current_block()
+        weights = []
+        values = []
+
+        for tx in transactions:
+            value = tx.get("weight", 0)
+            timestamp = tx.get("time")
+            block = self._approximate_block_number(timestamp)
+
+            if value <= 0 or value < 1e-10:
+                # Transfert ERC20, valeur nulle, ou dust amount (< 1e-10)
+                # utiliser poids unitaire basé uniquement sur la récence temporelle
+                if block is not None:
+                    age_blocks = max(0, current_block - block)
+                    # Poids normalisé par récence (max 1.0 pour tx récente)
+                    weight = math.exp(-self.config.lambda_rec * age_blocks)
+                else:
+                    weight = 0.5
+                weights.append(weight)
+                values.append(1.0)  # Valeur unitaire pour normalisation
+            else:
+                if block is not None:
+                    # Poids exponentiellement décroissant avec l'âge
+                    age_blocks = max(0, current_block - block)
+                    weight = value * math.exp(-self.config.lambda_rec * age_blocks)
+                else:
+                    # Sans timestamp, on donne un poids moyen
+                    weight = value * 0.5
+
+                weights.append(weight)
+                values.append(value)
+
+        if not values:
+            return 0.0
+
+        return sum(weights) / sum(values)
+
+    def _calc_synchronie(self, tx_out: List[Dict], tx_in: List[Dict]) -> float:
+        """
+        Calcule le score de synchronie temporelle selon la spécification formelle.
+
+        S = (1/N_tot) * Σ_{e_out} 1[∃ e_in : |τ(e_out) - τ(e_in)| ≤ Δ_sync]
+
+        Pour chaque transaction sortante, on vérifie s'il existe au moins une
+        transaction entrante dans la fenêtre de synchronie temporelle.
+        """
+        if not tx_out or not tx_in:
+            return 0.0
+
+        n_out = len(tx_out)
+        n_in = len(tx_in)
+        n_tot = n_out + n_in
+        if n_tot == 0:
+            return 0.0
+
+        # Convertir en blocs (numéros de blocs)
+        out_blocks = []
+        for tx in tx_out:
+            block = self._approximate_block_number(tx.get("time"))
+            if block is not None:
+                out_blocks.append(block)
+
+        in_blocks = []
+        for tx in tx_in:
+            block = self._approximate_block_number(tx.get("time"))
+            if block is not None:
+                in_blocks.append(block)
+
+        # Si pas de timestamps valides, on ne peut pas calculer la synchronie
+        if not out_blocks or not in_blocks:
+            return 0.0
+
+        # Trier pour recherche efficace
+        in_blocks_sorted = sorted(in_blocks)
+        import bisect
+
+        # Compter combien de transactions sortantes ont une correspondance
+        sync_count = 0
+
+        for out_block in out_blocks:
+            # Recherche dichotomique
+            idx = bisect.bisect_left(in_blocks_sorted, out_block)
+
+            # Vérifier les voisins proches (±1 position)
+            found = False
+            for offset in [0, -1, 1]:
+                check_idx = idx + offset
+                if 0 <= check_idx < len(in_blocks_sorted):
+                    gap = abs(in_blocks_sorted[check_idx] - out_block)
+                    if gap <= self.config.delta_t_blocks:
+                        found = True
+                        break
+
+            if found:
+                sync_count += 1
+
+        # Synchronie = proportion de tx sortantes synchronisées / N_tot
+        # Note: on normalise par N_tot (total des deux sens) comme dans la spec
+        return sync_count / n_tot
+
+    def _calc_equilibre(self, v_out: float, v_in: float, v_total: float) -> float:
+        """
+        Calcule le score d'équilibre (bonus uniquement).
+
+        Si bidirectionnel: S_equilibre = 0.5 × min(V_out, V_in) / V_total
+        """
+        if v_total <= 0:
+            return 0.0
+
+        return 0.5 * min(v_out, v_in) / v_total
+
+    def _compute_indirect_score(self, main_address: str, target: str) -> float:
+        """
+        Implémente l'algorithme de Katz temporel avec beam search.
+
+        Args:
+            main_address: Adresse principale (déjà normalisée, origine du graphe)
+            target: Adresse cible (déjà normalisée, origine du graphe)
+
+        Returns:
+            Score indirect SI [0, 1]
+        """
+        # Vérifier que les nœuds existent dans le graphe
+        if main_address not in self.graph or target not in self.graph:
+            return 0.0
+
+        # Vérifier s'il existe un chemin direct
+        if self.graph.has_edge(main_address, target) or self.graph.has_edge(target, main_address):
+            # S'il y a des transactions directes, le score indirect est moins important
+            # mais on le calcule quand même pour détecter les patterns complexes
+            pass
+
+        # Priority queue: (-score, depth, node, path_times, first_volume)
+        # On utilise une heap pour avoir les meilleurs scores en premier
+        heap: List[Tuple[float, int, str, List[int], float]] = []
+        heapq.heappush(heap, (-1.0, 0, main_address, [], 0.0))
+
+        total_contribution = 0.0
+        visited_paths: Set[Tuple[str, ...]] = set()
+        paths_explored = 0
+
+        while heap and paths_explored < self.config.max_paths:
+            neg_score, depth, current, path_times, first_volume = heapq.heappop(heap)
+            current_score = -neg_score
+
+            if depth >= self.config.k_max:
+                continue
+
+            # Récupérer les voisins
+            neighbors = list(self.graph.successors(current)) + list(self.graph.predecessors(current))
+            neighbors = list(set(neighbors))  # Dédupliquer
+
+            for neighbor in neighbors:
+                if neighbor == main_address:  # Éviter les cycles vers le départ
+                    continue
+
+                # Vérifier le degré (early stopping pour les hubs)
+                degree = self.graph.degree(neighbor)
+                if depth == 0 and degree > self.config.max_degree_explore:
+                    continue
+
+                # Récupérer les arêtes entre current et neighbor
+                edges = self._get_all_edges(current, neighbor)
+
+                for edge in edges:
+                    # Vérifier la causalité temporelle
+                    timestamp = edge.get("time")
+                    block = self._approximate_block_number(timestamp)
+
+                    if block is None:
+                        continue
+
+                    # Vérifier que la transaction est après ou au même moment que le dernier bloc du chemin
+                    # NOTE: On autorise l'égalité car les transactions dans le même bloc peuvent être liées
+                    if path_times and block < max(path_times):
+                        continue
+
+                    # Calculer le score local de l'arête
+                    s_edge = self._compute_local_edge_score(edge)
+
+                    # Calculer la pénalité temporelle
+                    if path_times:
+                        time_gap = block - max(path_times)
+                        time_penalty = math.exp(-self.config.lambda_chain * time_gap)
+                    else:
+                        time_penalty = 1.0
+
+                    # Calculer la pénalité hub (atténuée pour ne pas pénaliser trop fort)
+                    if depth == 0:
+                        # Pénalité douce: ln(degree) au lieu de sqrt(degree)
+                        # Un hub avec 100 connexions aura ~0.5 au lieu de 0.1
+                        hub_penalty = 1.0 / (1.0 + 0.2 * math.log(max(degree, 2)))
+                    else:
+                        hub_penalty = 1.0
+
+                    # Nouveau score pour ce chemin
+                    new_score = current_score * s_edge * time_penalty * hub_penalty
+
+                    # Déterminer le premier volume pour la conservation
+                    if depth == 0:
+                        new_first_volume = edge.get("weight", 0)
+                    else:
+                        new_first_volume = first_volume
+
+                    # Si on atteint la cible via un chemin indirect (depth >= 1)
+                    # Les chemins de longueur 1 (directs) ne comptent pas pour le score indirect
+                    if neighbor == target and depth >= 1:
+                        # Calculer la conservation de volume avec magnitude absolue
+                        last_volume = edge.get("weight", 0)
+                        if new_first_volume > 0 and last_volume > 0:
+                            # Ratio de similarité (0 à 1)
+                            ratio = min(new_first_volume, last_volume) / max(new_first_volume, last_volume)
+                            # Magnitude absolue: normaliser par rapport à 1 ETH
+                            # v_mag = 1.0 pour 1 ETH, 0.1 pour 0.1 ETH, etc.
+                            avg_volume = (new_first_volume + last_volume) / 2.0
+                            v_mag = min(avg_volume / (avg_volume + 1.0), 1.0)  # 1 ETH donne ~0.5, 10 ETH donne ~0.9
+                            # Conservation combinée: ratio * magnitude
+                            # Un chemin 10->10 ETH aura conservation ~0.9, un chemin 0.01->0.01 aura ~0.01
+                            conservation = (ratio ** self.config.rho) * v_mag
+                        else:
+                            # Transferts ERC20 (volume=0) - conservation faible mais non nulle
+                            # Basée sur la fréquence: plus il y a de tx, plus la conservation est élevée
+                            erc20_tx_count = len(edges) if edges else 1
+                            conservation = 0.05 * min(erc20_tx_count / 5.0, 1.0)  # Max 0.05 pour ERC20
+
+                        # Contribution avec atténuation Katz
+                        contribution = (self.config.theta ** depth) * new_score * conservation
+                        total_contribution += contribution
+
+                        path_tuple = tuple([main_address] + path_times + [neighbor])
+                        visited_paths.add(path_tuple)
+                    else:
+                        # Continuer l'exploration
+                        new_path_times = path_times + [block]
+                        heapq.heappush(
+                            heap,
+                            (-new_score, depth + 1, neighbor, new_path_times, new_first_volume)
+                        )
+
+            paths_explored += 1
+
+        # Si aucun chemin trouvé, retourner 0 explicitement
+        if total_contribution == 0.0:
+            return 0.0
+
+        # Normalisation par racine carrée avec clamp [0, 1]
+        # Cette normalisation préserve mieux la différenciation des scores
+        # tout en les ramenant à l'échelle [0, 1]
+        # sqrt(x) pour x < 1 donne une courbe qui récompense les contributions plus élevées
+        # mais sans la compression excessive de la sigmoïde
+        max_reasonable = 1.0  # Contribution attendue pour un chemin optimal
+        normalized = math.sqrt(min(total_contribution, max_reasonable))
+        return normalized
+
+    def _compute_local_edge_score(self, edge: Dict[str, Any]) -> float:
+        """
+        Calcule un score local [0, 1] pour une arête.
+
+        Basé sur la valeur de la transaction relative au volume total du graphe.
+        Les scores sont mieux différenciés selon le volume réel:
+        - 0 ETH (ERC20): 0.01
+        - 0.001 ETH: ~0.067
+        - 0.01 ETH: ~0.125
+        - 0.1 ETH: ~0.20
+        - 1 ETH: ~0.333
+        - 10 ETH: ~0.50
+        - 100 ETH: 1.0
+        """
+        weight = edge.get("weight", 0)
+        if weight <= 0 or weight < 1e-10:
+            # Transfert ERC20 ou valeur nulle/dust - score faible mais non nul
+            return 0.01
+
+        # Normalisation logarithmique avec échelle ajustée
+        # Référence: 50 ETH donne score 1.0 (plus sensible aux montants moyens)
+        ref_value = 50.0
+
+        # Pour les très petits montants (< 0.001), ajouter un facteur d'échelle
+        if weight < 0.001:
+            # Échelle linéaire pour les micro-montants
+            return max(0.01, min(weight / 0.015, 0.1))
+
+        return min(math.log(1 + weight) / math.log(1 + ref_value), 1.0)
+
+    def _compute_total_score(
+        self,
+        direct_components: Dict[str, float],
+        indirect_score: float,
+        n_tx: int
+    ) -> float:
+        """
+        Combine direct et indirect avec pondération dynamique.
+
+        Si N_tx < 3:
+            w_dir, w_ind = 0.4, 0.55  # Peu d'historique → plus d'indirect
+        Sinon:
+            w_dir, w_ind = 0.7, 0.25  # Suffisamment d'historique → privilégier direct
+
+        S_total = w_dir×S_dir + w_ind×S_ind + 0.05×S_dir×S_ind
+        """
+        s_direct = direct_components['s_direct']
+
+        if n_tx < 3:
+            w_dir, w_ind = 0.4, 0.55
+        else:
+            w_dir, w_ind = 0.7, 0.25
+
+        # Stocker les poids pour les métriques
+        direct_components['w_direct'] = w_dir
+        direct_components['w_indirect'] = w_ind
+
+        # Formule avec terme d'interaction
+        interaction = 0.05 * s_direct * indirect_score
+        total = w_dir * s_direct + w_ind * indirect_score + interaction
+
+        return min(total * 100, 100.0)  # Convertir en [0, 100]
+
+    def _determine_confidence(self, tx_count: int, v_total: float) -> str:
+        """
+        Détermine le niveau de confiance du score.
+
+        high: >= 5 transactions ou >= 10 ETH
+        medium: >= 2 transactions ou >= 1 ETH
+        low: sinon
+        """
+        if tx_count >= 5 or v_total >= 10.0:
+            return "high"
+        elif tx_count >= 2 or v_total >= 1.0:
+            return "medium"
+        else:
+            return "low"
+
+    def _classify_score(self, score: float) -> str:
+        """
+        Classification du score selon les seuils d'interprétation formels.
+
+        | Score | Classification | Signification |
+        |-------|---------------|---------------|
+        | 0.90 - 1.00 | entity_unique | Contrôle total, probablement même propriétaire |
+        | 0.75 - 0.90 | economic_partner | Relation privilégiée (client/fournisseur régulier) |
+        | 0.50 - 0.75 | structural_relation | Contact occasionnel mais via réseau cohérent |
+        | 0.30 - 0.50 | occasional_contact | Interaction indirecte via hub ou unique |
+        | 0.00 - 0.30 | no_correlation | Bruit ou relation trop faible |
+        """
+        if score >= 0.90:
+            return "entity_unique"
+        elif score >= 0.75:
+            return "economic_partner"
+        elif score >= 0.50:
+            return "structural_relation"
+        elif score >= 0.30:
+            return "occasional_contact"
+        else:
+            return "no_correlation"
+
+    def get_score_classification(self, main_address: str, node: str) -> Dict[str, Any]:
+        """
+        Retourne le score complet avec classification et interprétation.
+
+        Returns:
+            Dict avec score, classification, et description textuelle
+        """
+        score_result = self.score(main_address, node)
+
+        classification = self._classify_score(score_result.direct)
+
+        descriptions = {
+            "entity_unique": "Contrôle total, probablement même propriétaire",
+            "economic_partner": "Relation privilégiée (client/fournisseur régulier)",
+            "structural_relation": "Contact occasionnel mais via réseau cohérent",
+            "occasional_contact": "Interaction indirecte via hub ou unique",
+            "no_correlation": "Bruit ou relation trop faible"
+        }
+
+        return {
+            "score": score_result,
+            "classification": classification,
+            "description": descriptions.get(classification, "Inconnu"),
+            "interpretation": {
+                "direct_score": score_result.direct,
+                "indirect_score": score_result.indirect,
+                "total_score": score_result.total,
+                "confidence": score_result.confidence,
+                "intensite": score_result.intensite,
+                "recence": score_result.recence,
+                "synchronie": score_result.synchronie,
+                "equilibre": score_result.equilibre
+            }
+        }
+
+    def _get_tx_out(self, main_address: str, node: str) -> List[Dict[str, Any]]:
+        """Extrait les transactions sortantes (main_address -> node)."""
+        edges = []
+        edge_data = self.graph.get_edge_data(main_address, node, default={})
+        for key, data in edge_data.items():
+            edge = dict(data)
+            edge["from"] = main_address
+            edge["to"] = node
+            edges.append(edge)
+        return edges
+
+    def _get_tx_in(self, main_address: str, node: str) -> List[Dict[str, Any]]:
+        """Extrait les transactions entrantes (node -> main_address)."""
+        edges = []
+        edge_data = self.graph.get_edge_data(node, main_address, default={})
+        for key, data in edge_data.items():
+            edge = dict(data)
+            edge["from"] = node
+            edge["to"] = main_address
+            edges.append(edge)
+        return edges
+
+    def _get_reference_volume(self, main_address: str) -> float:
+        """
+        Calcule le volume de référence pour la normalisation du score d'intensité.
+
+        Mode absolu: utilise absolute_v_ref comme référence globale
+        Mode relatif: utilise le percentile 95 des volumes de l'adresse principale
+        """
+        if main_address in self._ref_stats_cache:
+            return self._ref_stats_cache[main_address]['v_ref']
+
+        # Mode absolu: référence fixe (P1-003)
+        if self.config.volume_normalization_mode == "absolute":
+            v_ref = self.config.absolute_v_ref
+            self._ref_stats_cache[main_address] = {'v_ref': v_ref}
+            return v_ref
+
+        # Mode relatif: calculer à partir des données locales
+        volumes = []
+
+        # Voisins sortants
+        for _, _, data in self.graph.out_edges(main_address, data=True):
+            volumes.append(data.get('weight', 0))
+
+        # Voisins entrants
+        for _, _, data in self.graph.in_edges(main_address, data=True):
+            volumes.append(data.get('weight', 0))
+
+        if not volumes:
+            v_ref = 1.0  # Valeur par défaut minimale
+        else:
+            # Calculer le percentile configuré
+            sorted_volumes = sorted(volumes)
+            idx = int(len(sorted_volumes) * self.config.v_percentile_ref / 100)
+            idx = min(idx, len(sorted_volumes) - 1)
+            v_ref = sorted_volumes[idx] if idx >= 0 else sorted_volumes[-1]
+
+            # Pour les micro-transactions, utiliser le max si le percentile 95 est trop faible
+            if v_ref < 0.001:
+                v_ref = max(v_ref, max(volumes) * 0.5)
+
+        # Pour les micro-volumes, utiliser le max réel comme référence
+        # mais garantir une valeur minimale pour éviter la division par zéro
+        if not volumes:
+            v_ref = 1.0
+        elif max(volumes) < 0.001:
+            # Très petits volumes: utiliser le max comme référence
+            v_ref = max(volumes)
+        else:
+            # Normal: utiliser le percentile avec un minimum raisonnable
+            v_ref = max(v_ref, max(volumes) * 0.01)
+
+        self._ref_stats_cache[main_address] = {'v_ref': max(v_ref, 0.00001)}
+        return self._ref_stats_cache[main_address]['v_ref']
+
+    def _approximate_block_number(self, timestamp: Any) -> Optional[int]:
+        """
+        Convertit un timestamp en numéro de bloc approximatif.
+
+        Args:
+            timestamp: Timestamp (str ISO ou datetime)
+
+        Returns:
+            Numéro de bloc approximatif ou None si invalide
+        """
+        try:
+            if isinstance(timestamp, str):
+                if timestamp == 'unknown':
+                    return None
+                # Nettoyer le format (ex: "2026-02-21 19:15:59.000 UTC" -> "2026-02-21T19:15:59.000+00:00")
+                cleaned = timestamp.replace(" UTC", "+00:00").replace(" ", "T")
+                if '+' not in cleaned and 'Z' not in cleaned:
+                    cleaned += '+00:00'
+                ts = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
+            elif isinstance(timestamp, datetime):
+                ts = timestamp
+            else:
+                return None
+
+            # Conversion en timestamp Unix
+            seconds_since_genesis = ts.timestamp() - self.ETH_GENESIS_TIMESTAMP
+
+            # Conversion en blocs (approximatif)
+            blocks = int(seconds_since_genesis / self.ETH_BLOCK_TIME)
+
+            return max(0, blocks)
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    def _get_current_block(self) -> int:
+        """
+        Retourne le numéro de bloc courant (ou estimation).
+
+        Utilise le timestamp le plus récent du graphe + marge.
+        """
+        if self._current_block is not None:
+            return self._current_block
+
+        max_block = 0
+        for _, _, data in self.graph.edges(data=True):
+            timestamp = data.get('time')
+            block = self._approximate_block_number(timestamp)
+            if block is not None:
+                max_block = max(max_block, block)
+
+        # Si aucun bloc trouvé, utiliser une estimation (Ethereum ~ Mars 2026)
+        if max_block == 0:
+            max_block = 22000000  # ~Mars 2026
+
+        # Ajouter une marge pour les nouvelles transactions
+        self._current_block = max_block + 1000
+        return self._current_block

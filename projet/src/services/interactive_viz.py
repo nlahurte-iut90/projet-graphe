@@ -10,6 +10,7 @@ import networkx as nx
 from pyvis.network import Network
 
 from src.domain.models import Address, AddressRelationshipTable
+from src.infrastructure.price_service import get_price_service
 
 
 class InteractiveGraphVisualizer:
@@ -32,6 +33,7 @@ class InteractiveGraphVisualizer:
         self.base_output_dir.mkdir(exist_ok=True)
         self.output_dir: Optional[Path] = None  # Sera défini à chaque visualize()
         self.tables: Dict[str, AddressRelationshipTable] = {}
+        self.price_service = get_price_service()
 
     def set_relationship_tables(self, tables: List[AddressRelationshipTable]):
         """Configure les tables de relation."""
@@ -57,16 +59,28 @@ class InteractiveGraphVisualizer:
         tx_count: int,
         total_volume: float,
         relationship_scores: Dict[str, float],
-        main_addresses: List[Address]
+        main_addresses: List[Address],
+        relationship_details: Optional[Dict[str, Dict]] = None
     ) -> str:
-        """Construit le tooltip pour un nœud - format simple texte."""
+        """Construit le tooltip pour un nœud avec les dimensions temporelles."""
+        # Volume en EUR
+        volume_eur = self.price_service.eth_to_eur(total_volume)
+        if volume_eur is not None:
+            if volume_eur >= 1000:
+                volume_eur_str = f"{volume_eur:,.0f} €".replace(",", " ")
+            else:
+                volume_eur_str = f"{volume_eur:.2f} €"
+            volume_str = f"{total_volume:.4f} ETH (~{volume_eur_str})"
+        else:
+            volume_str = f"{total_volume:.4f} ETH"
+
         lines = [
             f"Address: {node_id}",
             f"Type: {'MAIN' if is_main else 'CONNECTED'}",
             f"Transactions: {tx_count}",
-            f"Volume: {total_volume:.4f} ETH",
+            f"Volume: {volume_str}",
             "",
-            "Relationship Scores:",
+            "Relationship Scores (Temporal):",
         ]
 
         for main_addr in main_addresses:
@@ -81,10 +95,23 @@ class InteractiveGraphVisualizer:
         return "\n".join(lines)
 
     def _build_edge_tooltip(self, tx_hash: str, value: float, value_wei: int, timestamp: str) -> str:
-        """Construit le tooltip pour une transaction."""
+        """Construit le tooltip pour une transaction avec conversion EUR."""
+        # Conversion EUR
+        value_eur = self.price_service.eth_to_eur(value)
+        if value_eur is not None:
+            if value_eur >= 1000:
+                eur_str = f"{value_eur:,.0f} €".replace(",", " ")
+            elif value_eur >= 1:
+                eur_str = f"{value_eur:.2f} €"
+            else:
+                eur_str = f"{value_eur:.4f} €"
+            value_str = f"{value:.6f} ETH (~{eur_str})"
+        else:
+            value_str = f"{value:.6f} ETH"
+
         return f"""Transaction
 Hash: {tx_hash}
-Value: {value:.6f} ETH
+Value: {value_str}
 Wei: {value_wei:,}
 Time: {timestamp}"""
 
@@ -123,22 +150,30 @@ Time: {timestamp}"""
                 total_volume += data.get('weight', 0)
                 tx_count += 1
 
-            # Scores - pour chaque nœud, stocker le score de relation avec chaque adresse principale
+            # Scores et détails - pour chaque nœud, stocker le score de relation avec chaque adresse principale
             relationship_scores = {}
+            relationship_details = {}
             for main_addr in main_addresses:
                 score = 0.0
+                details = {}
                 if main_addr.address in self.tables:
                     table = self.tables[main_addr.address]
                     rel = table.get_relationship(Address(node_id))
                     if rel:
                         score = rel.total_score
+                        details = {
+                            'direct_score': rel.direct_score,
+                            'indirect_score': rel.indirect_score,
+                            'confidence': rel.confidence,
+                            'score_breakdown': rel.metrics.get('score_breakdown', {})
+                        }
                 relationship_scores[main_addr.address] = score
+                relationship_details[main_addr.address] = details
 
-            # Couleur - basée sur le score total de corrélation (max des deux tables)
+            # Couleur selon le score le plus élevé
             if is_main:
                 color = self.MAIN_NODE_COLOR
             else:
-                # Prendre le score maximum des deux adresses principales
                 max_score = max(relationship_scores.values()) if relationship_scores else 0
                 color = self._get_score_color(max_score)
 
@@ -149,10 +184,10 @@ Time: {timestamp}"""
             else:
                 label = f"{node_id[:6]}...{node_id[-4:]}"
 
-            # Tooltip simple (texte seul)
+            # Tooltip avec dimensions temporelles
             title = self._build_node_tooltip(
                 node_id, is_main, tx_count, total_volume,
-                relationship_scores, main_addresses
+                relationship_scores, main_addresses, relationship_details
             )
 
             nodes.append({
@@ -533,14 +568,10 @@ function resetNodeColors() {{
                 hidden: false
             }});
         }} else {{
-            // Nœuds secondaires - couleur selon le score max
-            const nodeData = getNodeData(node.id);
-            const scores = nodeData ? nodeData.relationship_scores : {{}};
-            const maxScore = Object.values(scores).length > 0 ? Math.max(...Object.values(scores)) : 0;
-            const scoreColor = getScoreColor(maxScore);
+            // Nœuds secondaires - gris si visible, caché sinon
             nodeUpdates.push({{
                 id: node.id,
-                color: {{ background: scoreColor, border: '#666' }},
+                color: {{ background: '{self.SCORE_COLORS["none"]}', border: '#666' }},
                 hidden: !isVisible
             }});
         }}
@@ -666,8 +697,7 @@ network.once("stabilizationIterationsDone", function() {{
         """
         instructions = """
             <div style="margin-top:8px;padding-top:8px;border-top:1px solid #eee;font-size:10px;color:#666;line-height:1.4;">
-                <b>All nodes colored</b> by max correlation score<br>
-                <b>Click a main node</b> to filter by its connections<br>
+                <b>Click a main node</b> to see its connections<br>
                 <b>Click background</b> to reset view
             </div>
         """
@@ -777,7 +807,8 @@ network.once("stabilizationIterationsDone", function() {{
         graph: nx.MultiDiGraph,
         main_addresses: List[Address],
         title: str = "Ethereum Correlation Graph",
-        auto_open: bool = True
+        auto_open: bool = True,
+        params: Optional[Dict[str, Any]] = None
     ) -> str:
         """Crée et sauvegarde la visualisation dans un sous-dossier timestampé."""
         net = self.create_visualization(graph, main_addresses, title)
@@ -788,7 +819,20 @@ network.once("stabilizationIterationsDone", function() {{
         self.output_dir.mkdir(exist_ok=True)
 
         main_short = main_addresses[0].address[:8] if main_addresses else "unknown"
-        filename = f"interactive_graph_{main_short}.html"
+        num_nodes = graph.number_of_nodes()
+        num_edges = graph.number_of_edges()
+        num_main = len(main_addresses)
+
+        # Construire le suffixe avec les paramètres
+        params_suffix = ""
+        if params:
+            depth = params.get('expansion_depth', '')
+            top_n = params.get('top_n', '')
+            base_limit = params.get('base_tx_limit', '')
+            exp_limit = params.get('expansion_tx_limit', '')
+            params_suffix = f"_d{depth}_top{top_n}_b{base_limit}_e{exp_limit}"
+
+        filename = f"interactive_graph_{main_short}_{num_nodes}nodes_{num_edges}edges_{num_main}main{params_suffix}.html"
         output_path = self.output_dir / filename
 
         with open(output_path, 'w', encoding='utf-8') as f:

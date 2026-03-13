@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from typing import List, Optional, Dict, Any, Tuple
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
@@ -32,56 +32,41 @@ class CorrelationResult:
 
 
 @dataclass
-class PathInfo:
-    """Information sur un chemin indirect entre deux adresses."""
-    nodes: List[Address]
-    score: float
-    depth: int
-
-    def __repr__(self) -> str:
-        path_str = " -> ".join([a.address[:8] + "..." for a in self.nodes])
-        return f"Path({path_str}, score={self.score:.2f})"
-
-
-@dataclass
-class PropagatedPathInfo:
-    """Information sur un chemin de propagation de score."""
-    source: Address           # Adresse principale (départ)
-    intermediate: List[Address]  # Nœuds intermédiaires
-    target: Address           # Nœud final
-    propagated_score: float   # Score propagé final
-    path_scores: List[Tuple[str, float]]  # [(adresse, score_local), ...]
-    decay_factor: float       # Facteur de déclin appliqué
-
-    def __repr__(self) -> str:
-        path = [self.source.address[:8] + "..."] + [a.address[:8] + "..." for a in self.intermediate] + [self.target.address[:8] + "..."]
-        path_str = " -> ".join(path)
-        return f"PropagatedPath({path_str}, score={self.propagated_score:.2f})"
-
-
-@dataclass
 class RelationshipScore:
-    """Score de relation entre deux adresses."""
+    """Score de relation entre deux adresses avec scoring temporel."""
     source: Address
     target: Address
-    direct_score: float  # Score basé sur les transactions directes
-    indirect_score: float  # Score basé sur les chemins indirects
-    propagated_score: float = 0.0  # NOUVEAU: Score par propagation multi-hop
-    total_score: float = 0.0  # Score total (max des trois)
+    direct_score: float       # Score direct SD [0-1]
+    indirect_score: float = 0.0  # Score indirect SI [0-1]
+    total_score: float = 0.0  # Score total combiné [0-100]
+    confidence: str = "low"    # 'high' | 'medium' | 'low'
     metrics: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        """Calcule le total_score comme le max des trois scores."""
-        object.__setattr__(
-            self,
-            'total_score',
-            max(self.direct_score, self.indirect_score, self.propagated_score)
-        )
+        """Calcule le total_score comme combinaison pondérée direct + indirect.
+
+        Utilise les poids dynamiques selon le nombre de transactions:
+        - N < 3: w_dir=0.4, w_ind=0.55 (privilégier indirect)
+        - N >= 3: w_dir=0.7, w_ind=0.25 (privilégier direct)
+        """
+        tx_count = self.metrics.get('tx_count', 0)
+
+        # Poids dynamiques selon richesse des données
+        if tx_count < 3:
+            w_dir, w_ind = 0.4, 0.55
+        else:
+            w_dir, w_ind = 0.7, 0.25
+
+        # Formule avec terme d'interaction
+        interaction = 0.05 * self.direct_score * self.indirect_score
+        total = w_dir * self.direct_score + w_ind * self.indirect_score + interaction
+
+        object.__setattr__(self, 'total_score', min(total * 100, 100.0))
 
     def __repr__(self) -> str:
         return (f"Relationship({self.source.address[:8]}... -> {self.target.address[:8]}..., "
-                f"direct={self.direct_score:.1f}, indirect={self.indirect_score:.1f}, "
-                f"propagated={self.propagated_score:.1f}, total={self.total_score:.1f})")
+                f"direct={self.direct_score:.2f}, indirect={self.indirect_score:.2f}, "
+                f"total={self.total_score:.1f}, confidence={self.confidence})")
 
 
 @dataclass

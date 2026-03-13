@@ -20,12 +20,10 @@ class RelationshipTableExporter:
         return {
             "source": rel.source.address,
             "target": rel.target.address,
-            "direct_score": rel.direct_score,
-            "indirect_score": rel.indirect_score,
-            "total_score": rel.total_score,
+            "score": rel.direct_score,
             "metrics": {
                 k: v for k, v in rel.metrics.items()
-                if k != 'indirect_paths'  # Exclure les objets complexes
+                if k not in ('score_breakdown',)  # Exclure les objets complexes
             }
         }
 
@@ -83,8 +81,8 @@ class RelationshipTableExporter:
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
             writer.writerow([
-                'main_address', 'target_address', 'direct_score',
-                'indirect_score', 'total_score', 'tx_count', 'volume_eth'
+                'main_address', 'target_address', 'score',
+                'total_score', 'tx_count', 'volume_eth'
             ])
 
             for table in tables:
@@ -93,7 +91,6 @@ class RelationshipTableExporter:
                         table.main_address.address,
                         rel.target.address,
                         rel.direct_score,
-                        rel.indirect_score,
                         rel.total_score,
                         rel.metrics.get('tx_count', 0),
                         rel.metrics.get('total_volume', 0)
