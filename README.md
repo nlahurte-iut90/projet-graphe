@@ -14,6 +14,7 @@ Cet outil récupère les transactions Ethereum via l'API Dune Analytics, constru
 # Lancer l'application
 uv run python -m src.main
 ```
+Tous les output sont dans /src/output
 
 ---
 
