@@ -26,7 +26,7 @@ class TemporalScorerConfig:
     """
     lambda_rec: float = 0.000154      # Décroissance récence (demi-vie 15j)
     lambda_chain: float = 0.0001      # Décroissance temporelle chaîne
-    theta: float = 0.5                # Atténuation profondeur Katz (0.5^depth: 0.5, 0.25, 0.125...)
+    theta: float = 0.7                # Atténuation profondeur Katz (0.7^depth: 0.7, 0.49, 0.34... moins agressif)
     rho: float = 1.5                  # Sévérité conservation volume
     delta_t_blocks: int = 100         # Fenêtre synchronie (±100 blocs)
     max_degree_explore: int = 100     # Early stopping hubs
@@ -39,8 +39,8 @@ class TemporalScorerConfig:
     max_paths: int = 500              # Limite de chemins pour indirect
     epsilon: float = 1e-9             # Précision numérique
     # Paramètres sigmoïde pour propagation bien différenciée
-    kappa_sigmoid: float = 8.0        # Plus raide = meilleure différenciation
-    tau_median_ref: float = 0.02      # Médiane basse = échelle étendue
+    kappa_sigmoid: float = 6.0        # Moins raide = moins de compression des scores
+    tau_median_ref: float = 0.05      # Médiane plus haute = meilleure sensibilité aux faibles contributions
 
 
 class TemporalScorer(SimilarityStrategy):
@@ -538,14 +538,23 @@ class TemporalScorer(SimilarityStrategy):
                     # Si on atteint la cible via un chemin indirect (depth >= 1)
                     # Les chemins de longueur 1 (directs) ne comptent pas pour le score indirect
                     if neighbor == target and depth >= 1:
-                        # Calculer la conservation de volume
+                        # Calculer la conservation de volume avec magnitude absolue
                         last_volume = edge.get("weight", 0)
                         if new_first_volume > 0 and last_volume > 0:
+                            # Ratio de similarité (0 à 1)
                             ratio = min(new_first_volume, last_volume) / max(new_first_volume, last_volume)
-                            conservation = ratio ** self.config.rho
+                            # Magnitude absolue: normaliser par rapport à 1 ETH
+                            # v_mag = 1.0 pour 1 ETH, 0.1 pour 0.1 ETH, etc.
+                            avg_volume = (new_first_volume + last_volume) / 2.0
+                            v_mag = min(avg_volume / (avg_volume + 1.0), 1.0)  # 1 ETH donne ~0.5, 10 ETH donne ~0.9
+                            # Conservation combinée: ratio * magnitude
+                            # Un chemin 10->10 ETH aura conservation ~0.9, un chemin 0.01->0.01 aura ~0.01
+                            conservation = (ratio ** self.config.rho) * v_mag
                         else:
-                            # Transferts ERC20 (volume=0) - conservation neutre pour permettre propagation
-                            conservation = 0.5
+                            # Transferts ERC20 (volume=0) - conservation faible mais non nulle
+                            # Basée sur la fréquence: plus il y a de tx, plus la conservation est élevée
+                            erc20_tx_count = len(edges) if edges else 1
+                            conservation = 0.05 * min(erc20_tx_count / 5.0, 1.0)  # Max 0.05 pour ERC20
 
                         # Contribution avec atténuation Katz
                         contribution = (self.config.theta ** depth) * new_score * conservation
@@ -580,18 +589,29 @@ class TemporalScorer(SimilarityStrategy):
         Calcule un score local [0, 1] pour une arête.
 
         Basé sur la valeur de la transaction relative au volume total du graphe.
-        NOTE: Retourne un score minimum de 0.3 même pour weight=0 (ERC20)
-        pour permettre la propagation des scores via les transferts de tokens.
+        Les scores sont mieux différenciés selon le volume réel:
+        - 0 ETH (ERC20): 0.01
+        - 0.001 ETH: ~0.067
+        - 0.01 ETH: ~0.125
+        - 0.1 ETH: ~0.20
+        - 1 ETH: ~0.333
+        - 10 ETH: ~0.50
+        - 100 ETH: 1.0
         """
         weight = edge.get("weight", 0)
-        if weight <= 0:
-            # Transfert ERC20 ou valeur nulle - score faible mais non nul
-            # 0.01 equivaut ~0.002 ETH sur l'echelle log (entre 0.001 et 0.01)
+        if weight <= 0 or weight < 1e-10:
+            # Transfert ERC20 ou valeur nulle/dust - score faible mais non nul
             return 0.01
 
-        # Normalisation logarithmique
-        # Supposons qu'une transaction de 100 ETH est "parfaite" (score 1.0)
-        ref_value = 100.0
+        # Normalisation logarithmique avec échelle ajustée
+        # Référence: 50 ETH donne score 1.0 (plus sensible aux montants moyens)
+        ref_value = 50.0
+
+        # Pour les très petits montants (< 0.001), ajouter un facteur d'échelle
+        if weight < 0.001:
+            # Échelle linéaire pour les micro-montants
+            return max(0.01, min(weight / 0.015, 0.1))
+
         return min(math.log(1 + weight) / math.log(1 + ref_value), 1.0)
 
     def _compute_total_score(
