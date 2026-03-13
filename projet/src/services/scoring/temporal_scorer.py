@@ -59,13 +59,12 @@ class TemporalScorer(SimilarityStrategy):
     ETH_BLOCK_TIME = 12               # Secondes par bloc
     ETH_GENESIS_TIMESTAMP = 1438269970  # Timestamp bloc 0
 
-    # Poids pour le score direct (rééquilibrés selon P1-001)
-    # Anciens: I=0.50, R=0.25, S=0.15, Eq=0.10
-    # Nouveaux: I=0.40, R=0.20, S=0.15, Eq=0.25 (plus de poids à l'équilibre)
-    W_INTENSITE = 0.40
-    W_RECENCE = 0.20
+    # Poids pour le score direct (selon spécification formelle)
+    # S_direct = 0.50*I + 0.25*R + 0.15*S + 0.10*E
+    W_INTENSITE = 0.50
+    W_RECENCE = 0.25
     W_SYNC = 0.15
-    W_EQUILIBRE = 0.25
+    W_EQUILIBRE = 0.10
 
     def __init__(self, graph: nx.MultiDiGraph, config: Optional[TemporalScorerConfig] = None):
         super().__init__(graph)
@@ -341,9 +340,9 @@ class TemporalScorer(SimilarityStrategy):
             timestamp = tx.get("time")
             block = self._approximate_block_number(timestamp)
 
-            if value <= 0:
-                # Transfert ERC20 ou valeur nulle - utiliser poids unitaire
-                # basé uniquement sur la récence temporelle
+            if value <= 0 or value < 1e-10:
+                # Transfert ERC20, valeur nulle, ou dust amount (< 1e-10)
+                # utiliser poids unitaire basé uniquement sur la récence temporelle
                 if block is not None:
                     age_blocks = max(0, current_block - block)
                     # Poids normalisé par récence (max 1.0 pour tx récente)
@@ -371,87 +370,66 @@ class TemporalScorer(SimilarityStrategy):
 
     def _calc_synchronie(self, tx_out: List[Dict], tx_in: List[Dict]) -> float:
         """
-        Calcule le score de synchronie temporelle avec fenêtre dynamique (P1-004).
+        Calcule le score de synchronie temporelle selon la spécification formelle.
 
-        La fenêtre de synchronie varie selon le volume moyen:
-        - Gros volumes (> 100 ETH): fenêtre large ~1h40 (500 blocs) pour déplacements de fonds
-        - Volumes moyens (> 10 ETH): fenêtre moyenne ~40 min (200 blocs)
-        - Petits volumes: fenêtre standard ~20 min (100 blocs) pour arbitrages
+        S = (1/N_tot) * Σ_{e_out} 1[∃ e_in : |τ(e_out) - τ(e_in)| ≤ Δ_sync]
 
-        Le score est pondéré par le volume et dégressif avec la distance temporelle.
+        Pour chaque transaction sortante, on vérifie s'il existe au moins une
+        transaction entrante dans la fenêtre de synchronie temporelle.
         """
         if not tx_out or not tx_in:
             return 0.0
 
-        # Convertir en blocs avec poids (volumes)
-        # NOTE: Pour les transferts ERC20 (weight=0), on utilise un poids unitaire (1.0)
-        # pour capturer la synchronie temporelle même sans valeur monétaire
-        out_txs = []  # List of (block, weight)
+        n_out = len(tx_out)
+        n_in = len(tx_in)
+        n_tot = n_out + n_in
+        if n_tot == 0:
+            return 0.0
+
+        # Convertir en blocs (numéros de blocs)
+        out_blocks = []
         for tx in tx_out:
             block = self._approximate_block_number(tx.get("time"))
             if block is not None:
-                weight = tx.get("weight", 0)
-                # Si pas de valeur (ERC20), utiliser poids unitaire pour la fréquence
-                out_txs.append((block, weight if weight > 0 else 1.0))
+                out_blocks.append(block)
 
-        in_txs = []  # List of (block, weight)
+        in_blocks = []
         for tx in tx_in:
             block = self._approximate_block_number(tx.get("time"))
             if block is not None:
-                weight = tx.get("weight", 0)
-                # Si pas de valeur (ERC20), utiliser poids unitaire pour la fréquence
-                in_txs.append((block, weight if weight > 0 else 1.0))
+                in_blocks.append(block)
 
-        if not out_txs or not in_txs:
+        # Si pas de timestamps valides, on ne peut pas calculer la synchronie
+        if not out_blocks or not in_blocks:
             return 0.0
 
-        # Calculer le volume moyen pour déterminer la fenêtre dynamique
-        all_volumes = [w for _, w in out_txs + in_txs]
-        avg_volume = sum(all_volumes) / len(all_volumes) if all_volumes else 0
-
-        # Fenêtre dynamique basée sur le volume (P1-004)
-        if avg_volume > 100:  # > 100 ETH
-            delta = 500  # ~1h40 (déplacement de fonds)
-        elif avg_volume > 10:  # > 10 ETH
-            delta = 200  # ~40 min
-        else:
-            delta = self.config.delta_t_blocks  # ~20 min (arbitrage rapide)
-
-        # Trier les transactions entrantes par bloc pour recherche efficace
-        in_txs_sorted = sorted(in_txs, key=lambda x: x[0])
-        in_blocks = [b for b, _ in in_txs_sorted]
+        # Trier pour recherche efficace
+        in_blocks_sorted = sorted(in_blocks)
         import bisect
 
-        # Calcul du score de synchronie pondéré
-        sync_score = 0.0
-        total_weight = 0.0
+        # Compter combien de transactions sortantes ont une correspondance
+        sync_count = 0
 
-        for out_block, out_weight in out_txs:
-            best_match = 0.0
+        for out_block in out_blocks:
+            # Recherche dichotomique
+            idx = bisect.bisect_left(in_blocks_sorted, out_block)
 
-            # Recherche dichotomique de la position
-            idx = bisect.bisect_left(in_blocks, out_block)
-
-            # Vérifier les voisins proches
+            # Vérifier les voisins proches (±1 position)
+            found = False
             for offset in [0, -1, 1]:
                 check_idx = idx + offset
-                if 0 <= check_idx < len(in_blocks):
-                    in_block = in_blocks[check_idx]
-                    gap = abs(in_block - out_block)
+                if 0 <= check_idx < len(in_blocks_sorted):
+                    gap = abs(in_blocks_sorted[check_idx] - out_block)
+                    if gap <= self.config.delta_t_blocks:
+                        found = True
+                        break
 
-                    if gap <= delta:
-                        # Score dégressif avec la distance temporelle
-                        # Pondéré par le minimum des volumes (synchronie significative)
-                        in_weight = in_txs_sorted[check_idx][1]
-                        time_factor = 1 - gap / delta
-                        volume_factor = min(out_weight, in_weight)
-                        match_score = time_factor * volume_factor
-                        best_match = max(best_match, match_score)
+            if found:
+                sync_count += 1
 
-            sync_score += best_match
-            total_weight += out_weight
-
-        return sync_score / total_weight if total_weight > 0 else 0.0
+        # Synchronie = proportion de tx sortantes synchronisées / N_tot
+        # Note: on normalise par N_tot (total des deux sens) comme dans la spec
+        return sync_count / n_tot
 
     def _calc_equilibre(self, v_out: float, v_in: float, v_total: float) -> float:
         """
