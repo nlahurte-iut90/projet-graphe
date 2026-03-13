@@ -284,8 +284,10 @@ class TemporalScorer(SimilarityStrategy):
         # Facteur de fréquence (saturation progressive) - toujours calculé
         freq_factor = 1.0 - math.exp(-n_total / self.config.tau)
 
-        # Si pas de volume (ex: transferts ERC20), score basé sur fréquence pure
-        if v_total <= 0:
+        # Si pas de volume significatif (ex: transferts ERC20 avec value~0), score basé sur fréquence pure
+        # NOTE: On traite aussi les volumes < 1e-10 comme nuls car ce sont probablement des dust amounts
+        # ou des arrondis de transactions ERC20 (ex: 1.337e-15 ETH)
+        if v_total <= 0 or v_total < 1e-10:
             # Score basé uniquement sur le nombre de transactions
             # 1 tx = 0.10, 5 tx = 0.28, 10 tx = 0.50, 50 tx = 0.96
             # Formule: min(n_total / (n_total + tau), 1.0) * saturation
