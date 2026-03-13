@@ -608,17 +608,25 @@ function showToast(msg, type) {{
 }}
 
 /**
- * Fonction appelée quand on change la profondeur dans le sélecteur.
+ * Fonction appelée quand on change la profondeur dans l'input.
  */
 function updateDepthFilter() {{
-    const selector = document.getElementById('depthSelector');
-    if (selector) {{
-        currentDepth = selector.value;
+    const input = document.getElementById('depthSelector');
+    if (input) {{
+        const value = input.value.trim();
+        const numValue = parseInt(value, 10);
+
+        // Si vide ou invalide, utiliser 'all', sinon utiliser la valeur numérique
+        if (value === '' || isNaN(numValue) || numValue < 1) {{
+            currentDepth = 'all';
+        }} else {{
+            currentDepth = Math.min(numValue, 10); // Max 10
+        }}
 
         // Mettre à jour le label affichant la profondeur actuelle
         const depthLabel = document.getElementById('depthLabel');
         if (depthLabel) {{
-            depthLabel.textContent = currentDepth === 'all' ? 'All' : currentDepth + ' hop(s)';
+            depthLabel.textContent = currentDepth === 'all' ? 'All depths' : currentDepth + ' hop(s)';
         }}
 
         // Si un nœud principal est sélectionné, rafraîchir l'affichage avec ce nœud
@@ -678,13 +686,8 @@ network.once("stabilizationIterationsDone", function() {{
 
         depth_selector = """
             <div style="margin-top:16px;padding-top:16px;border-top:1px solid #e0e0e0;">
-                <div style="font-size:10px;font-weight:500;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.08em;color:#333;">Depth</div>
-                <select id="depthSelector" onchange="updateDepthFilter()" style="width:100%;padding:8px 10px;font-size:11px;border:1px solid #000;border-radius:0;cursor:pointer;background:#fff;font-family:inherit;appearance:none;background-image:url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 12 12%22><path fill=%22%23000%22 d=%22M6 8L1 3h10z%22/></svg>');background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;">
-                    <option value="1">1 hop — Direct</option>
-                    <option value="2">2 hops</option>
-                    <option value="3">3 hops</option>
-                    <option value="all" selected>All depths</option>
-                </select>
+                <div style="font-size:10px;font-weight:500;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.08em;color:#333;">Depth (hops)</div>
+                <input type="number" id="depthSelector" min="1" max="10" value="" placeholder="All" oninput="updateDepthFilter()" style="width:100%;padding:8px 10px;font-size:11px;border:1px solid #000;border-radius:0;background:#fff;font-family:inherit;box-sizing:border-box;">
                 <div id="depthInfo" style="margin-top:8px;font-size:9px;color:#666;text-transform:uppercase;letter-spacing:0.04em;">
                     <span id="depthLabel">All depths</span>
                 </div>
