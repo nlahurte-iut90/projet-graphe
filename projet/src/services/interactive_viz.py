@@ -88,27 +88,6 @@ class InteractiveGraphVisualizer:
             short = f"{main_addr.address[:10]}..."
             lines.append(f"  {short}: {score:.1f}")
 
-            # Ajouter les détails temporels si disponibles
-            if relationship_details and main_addr.address in relationship_details:
-                details = relationship_details[main_addr.address]
-                breakdown = details.get('score_breakdown', {})
-                if breakdown:
-                    # Afficher les dimensions temporelles en pourcentage (×100)
-                    intensite = breakdown.get('intensite', 0) * 100
-                    recence = breakdown.get('recence', 0) * 100
-                    synchronie = breakdown.get('synchronie', 0) * 100
-                    equilibre = breakdown.get('equilibre', 0) * 100
-                    lines.append(f"    └─ Intensité: {intensite:.2f}")
-                    lines.append(f"    └─ Récence: {recence:.2f}")
-                    lines.append(f"    └─ Synchronie: {synchronie:.2f}")
-                    lines.append(f"    └─ Équilibre: {equilibre:.2f}")
-                    if 'interaction' in breakdown:
-                        interaction = breakdown.get('interaction', 0) * 100
-                        lines.append(f"    └─ Interaction: {interaction:.2f}")
-
-                confidence = details.get('confidence', 'low')
-                lines.append(f"    └─ Confiance: {confidence}")
-
         if is_main:
             lines.append("")
             lines.append("Click to color connections")

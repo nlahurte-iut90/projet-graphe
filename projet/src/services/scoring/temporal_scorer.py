@@ -277,9 +277,21 @@ class TemporalScorer(SimilarityStrategy):
 
         Pour les micro-volumes, on utilise une échelle améliorée qui préserve
         la sensibilité aux petits montants.
+
+        NOTE: Si v_total = 0 (transferts ERC20), on utilise uniquement le facteur
+        de fréquence avec une base minimale pour refléter l'activité.
         """
-        if v_total <= 0 or v_ref <= 0:
-            return 0.0
+        # Facteur de fréquence (saturation progressive) - toujours calculé
+        freq_factor = 1.0 - math.exp(-n_total / self.config.tau)
+
+        # Si pas de volume (ex: transferts ERC20), score basé uniquement sur fréquence
+        if v_total <= 0:
+            # Score minimal basé sur le nombre de transactions
+            # 1 tx = ~0.06, 5 tx = ~0.28, 10 tx = ~0.48
+            return 0.1 * freq_factor
+
+        if v_ref <= 0:
+            v_ref = 1.0
 
         # Volume factor - échelle adaptative selon le volume de référence
         if v_total < 0.00001:  # Moins de 0.00001 ETH (10e-5)
@@ -309,6 +321,9 @@ class TemporalScorer(SimilarityStrategy):
 
         Pour chaque tx: weight_tx = value × exp(-λ_rec × (current_block - block_number))
         S_recence = sum(weights) / sum(values)
+
+        NOTE: Pour les transactions avec value=0 (ERC20), on utilise un poids
+        unitaire (1.0) pour capturer la fréquence d'interaction.
         """
         if not transactions:
             return 0.0
@@ -319,22 +334,31 @@ class TemporalScorer(SimilarityStrategy):
 
         for tx in transactions:
             value = tx.get("weight", 0)
-            if value <= 0:
-                continue
-
             timestamp = tx.get("time")
             block = self._approximate_block_number(timestamp)
 
-            if block is not None:
-                # Poids exponentiellement décroissant avec l'âge
-                age_blocks = max(0, current_block - block)
-                weight = value * math.exp(-self.config.lambda_rec * age_blocks)
+            if value <= 0:
+                # Transfert ERC20 ou valeur nulle - utiliser poids unitaire
+                # basé uniquement sur la récence temporelle
+                if block is not None:
+                    age_blocks = max(0, current_block - block)
+                    # Poids normalisé par récence (max 1.0 pour tx récente)
+                    weight = math.exp(-self.config.lambda_rec * age_blocks)
+                else:
+                    weight = 0.5
+                weights.append(weight)
+                values.append(1.0)  # Valeur unitaire pour normalisation
             else:
-                # Sans timestamp, on donne un poids moyen
-                weight = value * 0.5
+                if block is not None:
+                    # Poids exponentiellement décroissant avec l'âge
+                    age_blocks = max(0, current_block - block)
+                    weight = value * math.exp(-self.config.lambda_rec * age_blocks)
+                else:
+                    # Sans timestamp, on donne un poids moyen
+                    weight = value * 0.5
 
-            weights.append(weight)
-            values.append(value)
+                weights.append(weight)
+                values.append(value)
 
         if not values:
             return 0.0
@@ -356,17 +380,23 @@ class TemporalScorer(SimilarityStrategy):
             return 0.0
 
         # Convertir en blocs avec poids (volumes)
+        # NOTE: Pour les transferts ERC20 (weight=0), on utilise un poids unitaire (1.0)
+        # pour capturer la synchronie temporelle même sans valeur monétaire
         out_txs = []  # List of (block, weight)
         for tx in tx_out:
             block = self._approximate_block_number(tx.get("time"))
             if block is not None:
-                out_txs.append((block, tx.get("weight", 0)))
+                weight = tx.get("weight", 0)
+                # Si pas de valeur (ERC20), utiliser poids unitaire pour la fréquence
+                out_txs.append((block, weight if weight > 0 else 1.0))
 
         in_txs = []  # List of (block, weight)
         for tx in tx_in:
             block = self._approximate_block_number(tx.get("time"))
             if block is not None:
-                in_txs.append((block, tx.get("weight", 0)))
+                weight = tx.get("weight", 0)
+                # Si pas de valeur (ERC20), utiliser poids unitaire pour la fréquence
+                in_txs.append((block, weight if weight > 0 else 1.0))
 
         if not out_txs or not in_txs:
             return 0.0
