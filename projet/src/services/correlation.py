@@ -467,6 +467,26 @@ class CorrelationService:
         print(f"\n[Expansion] === COMPLETE ===")
         print(f"[Expansion] Final graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
 
+        # === NOUVELLES ANALYSES DE GRAPHE ===
+        print(f"\n[Analysis] Running graph connectivity analysis...")
+        connectivity = self._analyze_graph_connectivity()
+        self._print_connectivity_summary(connectivity)
+
+        print(f"\n[Analysis] Running centrality analysis...")
+        centrality = self._analyze_centrality()
+        self._print_centrality_summary(centrality)
+
+        print(f"\n[Analysis] Running community detection...")
+        communities = self._analyze_communities()
+        self._print_communities_summary(communities)
+
+        # Stocker les résultats pour utilisation ultérieure
+        self._graph_analysis = {
+            'connectivity': connectivity,
+            'centrality': centrality,
+            'communities': communities
+        }
+
         return self._table1, self._table2
 
     def visualize_graph(self, address1: Address, address2: Address):
@@ -720,10 +740,183 @@ class CorrelationService:
         elif self._table1 and self._table2:
             visualizer.set_relationship_tables([self._table1, self._table2])
 
+        # Calculer le score global entre les deux adresses principales
+        global_score = None
+        if tables and len(tables) >= 2:
+            # Récupérer le score depuis la première table (address1 -> address2)
+            rel1 = tables[0].get_relationship(address2)
+            rel2 = tables[1].get_relationship(address1)
+            if rel1 and rel2:
+                global_score = (rel1.total_score + rel2.total_score) / 2
+            elif rel1:
+                global_score = rel1.total_score
+            elif rel2:
+                global_score = rel2.total_score
+        elif self._table1 and self._table2:
+            rel1 = self._table1.get_relationship(address2)
+            rel2 = self._table2.get_relationship(address1)
+            if rel1 and rel2:
+                global_score = (rel1.total_score + rel2.total_score) / 2
+            elif rel1:
+                global_score = rel1.total_score
+            elif rel2:
+                global_score = rel2.total_score
+
+        # Récupérer l'analyse de graphe si disponible
+        graph_analysis = getattr(self, '_graph_analysis', None)
+
         return visualizer.visualize(
             graph=self.graph,
             main_addresses=[address1, address2],
             title=f"Ethereum Correlation: {address1.address[:10]}... vs {address2.address[:10]}...",
             auto_open=auto_open,
-            params=params
+            params=params,
+            global_score=global_score,
+            graph_analysis=graph_analysis
         )
+
+    def _analyze_graph_connectivity(self) -> Dict[str, Any]:
+        """
+        Analyse la connectivité du graphe pour détecter les clusters.
+
+        Returns:
+            Dict avec:
+            - sccs: Liste des composantes fortement connexes
+            - wccs: Liste des composantes faiblement connexes
+            - articulation_points: Points pivots reliant des écosystèmes
+            - scc_count: Nombre de SCCs
+            - largest_scc_size: Taille de la plus grande SCC
+        """
+        if self.graph.number_of_nodes() < 2:
+            return {}
+
+        # Composantes fortement connexes (cycles de transactions)
+        sccs = list(nx.strongly_connected_components(self.graph))
+
+        # Composantes faiblement connexes (écosystèmes isolés)
+        wccs = list(nx.weakly_connected_components(self.graph))
+
+        # Points d'articulation (convertir en graphe non orienté)
+        undirected = self.graph.to_undirected()
+        try:
+            articulation_points = list(nx.articulation_points(undirected))
+        except nx.NetworkXError:
+            articulation_points = []
+
+        return {
+            'sccs': sccs,
+            'wccs': wccs,
+            'articulation_points': articulation_points,
+            'scc_count': len(sccs),
+            'largest_scc_size': len(max(sccs, key=len)) if sccs else 0,
+            'wcc_count': len(wccs),
+            'articulation_count': len(articulation_points)
+        }
+
+    def _analyze_centrality(self) -> Dict[str, Any]:
+        """
+        Calcule les mesures de centralité du graphe.
+
+        Returns:
+            Dict avec:
+            - pagerank: Dict {address: score} pondéré par volume
+            - betweenness: Dict {address: score} pondéré par volume
+            - top_pagerank: Top 5 adresses par PageRank
+            - top_betweenness: Top 5 adresses par betweenness
+        """
+        if self.graph.number_of_nodes() < 3:
+            return {}
+
+        # PageRank pondéré par volume
+        pagerank = nx.pagerank(self.graph, weight='weight')
+
+        # Betweenness centrality pondéré (inverse du volume comme distance)
+        betweenness = nx.betweenness_centrality(
+            self.graph,
+            weight=lambda u, v, d: 1.0 / (d.get('weight', 1) + 0.001)
+        )
+
+        # Top 5 pour chaque métrique
+        top_pagerank = sorted(pagerank.items(), key=lambda x: x[1], reverse=True)[:5]
+        top_betweenness = sorted(betweenness.items(), key=lambda x: x[1], reverse=True)[:5]
+
+        return {
+            'pagerank': pagerank,
+            'betweenness': betweenness,
+            'top_pagerank': top_pagerank,
+            'top_betweenness': top_betweenness,
+            'avg_pagerank': sum(pagerank.values()) / len(pagerank) if pagerank else 0
+        }
+
+    def _analyze_communities(self) -> Dict[str, Any]:
+        """
+        Détecte les communautés et motifs dans le graphe.
+
+        Returns:
+            Dict avec:
+            - cliques: Liste des cliques maximales
+            - max_clique_size: Taille de la plus grande clique
+            - clique_count: Nombre de cliques
+            - largest_cliques: Top 3 plus grandes cliques
+        """
+        if self.graph.number_of_nodes() < 3:
+            return {}
+
+        # Convertir en graphe non orienté pour les cliques
+        undirected = self.graph.to_undirected()
+
+        # Cliques maximales
+        cliques = list(nx.find_cliques(undirected))
+
+        # Trier par taille
+        cliques_by_size = sorted(cliques, key=len, reverse=True)
+
+        return {
+            'cliques': cliques,
+            'max_clique_size': len(cliques_by_size[0]) if cliques else 0,
+            'clique_count': len(cliques),
+            'largest_cliques': cliques_by_size[:3]  # Top 3 plus grandes
+        }
+
+    def _print_connectivity_summary(self, connectivity: Dict):
+        """Affiche un résumé de l'analyse de connectivité."""
+        if not connectivity:
+            print("  [Connectivity] Graph too small for analysis")
+            return
+
+        print(f"  Strongly Connected Components: {connectivity['scc_count']}")
+        print(f"  Largest SCC size: {connectivity['largest_scc_size']} nodes")
+        print(f"  Weakly Connected Components: {connectivity['wcc_count']}")
+        print(f"  Articulation points: {connectivity['articulation_count']}")
+
+        if connectivity['articulation_points']:
+            print(f"  Pivot addresses: {[ap[:10] + '...' for ap in connectivity['articulation_points'][:3]]}")
+
+    def _print_centrality_summary(self, centrality: Dict):
+        """Affiche un résumé de l'analyse de centralité."""
+        if not centrality:
+            print("  [Centrality] Graph too small for analysis")
+            return
+
+        print(f"  Top PageRank:")
+        for addr, score in centrality['top_pagerank'][:3]:
+            print(f"    {addr[:10]}...: {score:.4f}")
+
+        print(f"  Top Betweenness (intermediaries):")
+        for addr, score in centrality['top_betweenness'][:3]:
+            print(f"    {addr[:10]}...: {score:.4f}")
+
+    def _print_communities_summary(self, communities: Dict):
+        """Affiche un résumé de la détection de communautés."""
+        if not communities:
+            print("  [Communities] Graph too small for analysis")
+            return
+
+        print(f"  Cliques found: {communities['clique_count']}")
+        print(f"  Max clique size: {communities['max_clique_size']}")
+
+        if communities['max_clique_size'] >= 3:
+            print(f"  Largest clique members:")
+            for clique in communities['largest_cliques'][:1]:
+                for addr in list(clique)[:3]:
+                    print(f"    - {addr[:10]}...")
