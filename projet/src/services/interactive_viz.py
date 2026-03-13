@@ -598,13 +598,12 @@ function resetNodeColors() {{
 
 function showToast(msg, type) {{
     const t = document.createElement('div');
-    t.style.cssText = 'position:fixed;top:20px;right:20px;padding:12px 20px;border-radius:6px;' +
-        'font-family:system-ui,sans-serif;font-size:13px;font-weight:500;z-index:10000;' +
-        'box-shadow:0 4px 12px rgba(0,0,0,0.15);' +
-        (type === 'success' ? 'background:#d4edda;color:#155724;border:1px solid #c3e6cb;' :
-                              'background:#d1ecf1;color:#0c5460;border:1px solid #bee5eb;');
+    t.style.cssText = 'position:fixed;top:24px;right:24px;padding:14px 24px;font-family:"SF Mono",Monaco,"Cascadia Code",monospace;font-size:11px;font-weight:400;z-index:10000;letter-spacing:0.04em;text-transform:uppercase;' +
+        'box-shadow:0 8px 32px rgba(0,0,0,0.08);backdrop-filter:blur(12px);background:rgba(255,255,255,0.96);color:#000;border:1px solid #000;' +
+        'transition:all 0.3s cubic-bezier(0.4,0,0.2,1);';
     t.textContent = msg;
     document.body.appendChild(t);
+    setTimeout(function() {{ t.style.opacity = '0'; t.style.transform = 'translateY(-8px)'; }}, 2200);
     setTimeout(function() {{ t.remove(); }}, 2500);
 }}
 
@@ -665,62 +664,159 @@ network.once("stabilizationIterationsDone", function() {{
 }});
 """
 
-    def _generate_legend_html(self) -> str:
-        """Génère la légende HTML avec le sélecteur de profondeur amélioré."""
-        items = [
-            ("80-100", self.SCORE_COLORS["high"], "Strong"),
-            ("50-79", self.SCORE_COLORS["medium"], "Medium"),
-            ("20-49", self.SCORE_COLORS["low"], "Weak"),
-            ("0-19", self.SCORE_COLORS["very_low"], "Very weak"),
-            ("None", self.SCORE_COLORS["none"], "No relation"),
-            ("Main", self.MAIN_NODE_COLOR, "Principal"),
-        ]
-        items_html = "".join([
-            f"<div style='display:flex;align-items:center;margin:4px 0;font-size:11px;'>"
-            f"<div style='width:12px;height:12px;border-radius:50%;background:{c};margin-right:8px;border:2px solid #333;'></div>"
-            f"<b>{s}</b>: {l}</div>"
-            for s, c, l in items
-        ])
+    def _generate_legend_html(self, global_score: Optional[float] = None) -> str:
+        """Génère la légende HTML avec style monochrome institutionnel."""
+        # Score global avec style sobre
+        global_score_html = ""
+        if global_score is not None:
+            global_score_html = f"""
+            <div style="margin-bottom:20px;padding:16px 12px;border:1px solid #000;text-align:center;background:#fff;">
+                <div style="font-size:9px;color:#666;text-transform:uppercase;letter-spacing:0.12em;font-weight:500;">Correlation Score</div>
+                <div style="font-size:32px;font-weight:300;color:#000;margin:8px 0;letter-spacing:-0.02em;font-family:SF Mono,Monaco,monospace;">{global_score:.1f}</div>
+            </div>
+            """
+
         depth_selector = """
-            <div style="margin-top:12px;padding-top:12px;border-top:1px solid #eee;">
-                <div style="font-size:11px;font-weight:600;margin-bottom:6px;">Depth (hops)</div>
-                <select id="depthSelector" onchange="updateDepthFilter()" style="width:100%;padding:4px 8px;font-size:11px;border:1px solid #ddd;border-radius:4px;cursor:pointer;background:white;">
-                    <option value="1">1 hop (direct)</option>
+            <div style="margin-top:16px;padding-top:16px;border-top:1px solid #e0e0e0;">
+                <div style="font-size:10px;font-weight:500;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.08em;color:#333;">Depth</div>
+                <select id="depthSelector" onchange="updateDepthFilter()" style="width:100%;padding:8px 10px;font-size:11px;border:1px solid #000;border-radius:0;cursor:pointer;background:#fff;font-family:inherit;appearance:none;background-image:url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2212%22 height=%2212%22 viewBox=%220 0 12 12%22><path fill=%22%23000%22 d=%22M6 8L1 3h10z%22/></svg>');background-repeat:no-repeat;background-position:right 10px center;padding-right:28px;">
+                    <option value="1">1 hop — Direct</option>
                     <option value="2">2 hops</option>
                     <option value="3">3 hops</option>
                     <option value="all" selected>All depths</option>
                 </select>
-                <div id="depthInfo" style="margin-top:6px;font-size:10px;color:#666;line-height:1.4;">
-                    Showing: <span id="depthLabel">All</span>
+                <div id="depthInfo" style="margin-top:8px;font-size:9px;color:#666;text-transform:uppercase;letter-spacing:0.04em;">
+                    <span id="depthLabel">All depths</span>
                 </div>
             </div>
         """
+
         instructions = """
-            <div style="margin-top:8px;padding-top:8px;border-top:1px solid #eee;font-size:10px;color:#666;line-height:1.4;">
-                <b>Click a main node</b> to see its connections<br>
-                <b>Click background</b> to reset view
+            <div style="margin-top:14px;padding-top:14px;border-top:1px solid #e0e0e0;font-size:9px;color:#444;line-height:1.6;letter-spacing:0.01em;">
+                <span style="color:#000;font-weight:500;">Click main node</span> — Filter connections<br>
+                <span style="color:#000;font-weight:500;">Click background</span> — Reset view
             </div>
         """
-        return f"""<div style="position:absolute;top:15px;left:15px;background:rgba(255,255,255,0.97);padding:12px 16px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,0.15);font-family:system-ui,sans-serif;z-index:1000;max-width:200px;">
-            <div style="font-size:13px;font-weight:600;margin-bottom:8px;border-bottom:1px solid #eee;padding-bottom:6px;">Relationship Score</div>
-            {items_html}
+
+        return f"""<div style="position:absolute;top:20px;left:20px;background:#fafafa;padding:20px;border:1px solid #000;box-shadow:8px 8px 0 rgba(0,0,0,0.08);font-family:SF Mono,Monaco,Cascadia Code,monospace;z-index:1000;max-width:220px;">
+            {global_score_html}
             {depth_selector}
             {instructions}
         </div>"""
+
+    def _generate_graph_analysis_html(self, graph_analysis: Dict[str, Any]) -> str:
+        """Génère le panneau HTML avec style monochrome institutionnel."""
+        connectivity = graph_analysis.get('connectivity', {})
+        centrality = graph_analysis.get('centrality', {})
+        communities = graph_analysis.get('communities', {})
+
+        html_parts = []
+
+        # Section Connectivité
+        if connectivity:
+            scc_count = connectivity.get('scc_count', 0)
+            largest_scc = connectivity.get('largest_scc_size', 0)
+            wcc_count = connectivity.get('wcc_count', 0)
+            art_count = connectivity.get('articulation_count', 0)
+
+            art_points = connectivity.get('articulation_points', [])[:2]
+            art_html = ""
+            if art_points:
+                art_list = ", ".join([f"{ap[:6]}.." for ap in art_points])
+                art_html = f'<div style="font-size:9px;color:#555;margin-top:6px;letter-spacing:0.02em;">{art_list}</div>'
+
+            html_parts.append(f"""
+            <div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #e0e0e0;">
+                <div style="font-size:9px;font-weight:500;color:#000;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.1em;">
+                    Connectivité
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:10px;">
+                    <div><span style="color:#666;">SCCs</span> <b style="color:#000;">{scc_count}</b></div>
+                    <div><span style="color:#666;">WCCs</span> <b style="color:#000;">{wcc_count}</b></div>
+                    <div><span style="color:#666;">Max SCC</span> <b style="color:#000;">{largest_scc}</b></div>
+                    <div><span style="color:#666;">Pivots</span> <b style="color:#000;">{art_count}</b></div>
+                </div>
+                {art_html}
+            </div>""")
+
+        # Section Centralité
+        if centrality:
+            top_pr = centrality.get('top_pagerank', [])[:2]
+            top_bw = centrality.get('top_betweenness', [])[:2]
+
+            pr_html = ""
+            for addr, score in top_pr:
+                pr_html += f'<div style="font-size:10px;margin-bottom:2px;"><span style="color:#666;">{addr[:6]}..</span> <b style="color:#000;font-weight:500;">{score:.3f}</b></div>'
+
+            bw_html = ""
+            for addr, score in top_bw:
+                bw_html += f'<div style="font-size:10px;margin-bottom:2px;"><span style="color:#666;">{addr[:6]}..</span> <b style="color:#000;font-weight:500;">{score:.3f}</b></div>'
+
+            html_parts.append(f"""
+            <div style="margin-bottom:16px;padding-bottom:16px;border-bottom:1px solid #e0e0e0;">
+                <div style="font-size:9px;font-weight:500;color:#000;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.1em;">
+                    Centralité
+                </div>
+                <div style="margin-bottom:10px;">
+                    <div style="font-size:9px;color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.04em;">PageRank</div>
+                    {pr_html}
+                </div>
+                <div>
+                    <div style="font-size:9px;color:#888;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.04em;">Betweenness</div>
+                    {bw_html}
+                </div>
+            </div>""")
+
+        # Section Communautés
+        if communities:
+            clique_count = communities.get('clique_count', 0)
+            max_clique = communities.get('max_clique_size', 0)
+
+            largest_cliques = communities.get('largest_cliques', [])[:1]
+            clique_html = ""
+            for clique in largest_cliques:
+                if len(clique) >= 3:
+                    members = ", ".join([f"{addr[:5]}.." for addr in list(clique)[:2]])
+                    clique_html += f'<div style="font-size:9px;color:#555;margin-top:4px;">{members}.. ({len(clique)})</div>'
+
+            html_parts.append(f"""
+            <div>
+                <div style="font-size:9px;font-weight:500;color:#000;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.1em;">
+                    Communautés
+                </div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:10px;margin-bottom:6px;">
+                    <div><span style="color:#666;">Cliques</span> <b style="color:#000;">{clique_count}</b></div>
+                    <div><span style="color:#666;">Max</span> <b style="color:#000;">{max_clique}</b></div>
+                </div>
+                {clique_html}
+            </div>""")
+
+        content = "".join(html_parts)
+
+        return f"""
+        <div style="position:absolute;top:20px;right:20px;background:#fafafa;padding:20px;border:1px solid #000;box-shadow:8px 8px 0 rgba(0,0,0,0.08);font-family:SF Mono,Monaco,Cascadia Code,monospace;z-index:1000;max-width:220px;max-height:80vh;overflow-y:auto;">
+            <div style="font-size:11px;font-weight:500;color:#000;margin-bottom:16px;border-bottom:1px solid #000;padding-bottom:10px;text-transform:uppercase;letter-spacing:0.1em;">
+                Analyse
+            </div>
+            {content}
+        </div>
+        """
 
     def create_visualization(
         self,
         graph: nx.MultiDiGraph,
         main_addresses: List[Address],
-        title: str = "Ethereum Correlation Graph"
+        title: str = "Ethereum Correlation Graph",
+        global_score: Optional[float] = None,
+        graph_analysis: Optional[Dict[str, Any]] = None
     ) -> Network:
         """Crée le réseau Pyvis."""
 
         net = Network(
             height="900px",
             width="100%",
-            bgcolor="#f8f9fa",
-            font_color="#333",
+            bgcolor="#ffffff",
+            font_color="#000",
             directed=True
         )
 
@@ -796,9 +892,14 @@ network.once("stabilizationIterationsDone", function() {{
         custom_js = self._get_custom_js(nodes_js_data)
         net.html = net.html.replace('</body>', f'<script>{custom_js}</script></body>')
 
-        # Ajouter légende
-        legend_html = self._generate_legend_html()
+        # Ajouter légende avec score global si fourni
+        legend_html = self._generate_legend_html(global_score)
         net.html = net.html.replace('<div id="mynetwork"', f'{legend_html}<div id="mynetwork"')
+
+        # Ajouter panneau d'analyse de graphe si fourni
+        if graph_analysis:
+            analysis_html = self._generate_graph_analysis_html(graph_analysis)
+            net.html = net.html.replace('<div id="mynetwork"', f'{analysis_html}<div id="mynetwork"')
 
         return net
 
@@ -808,10 +909,12 @@ network.once("stabilizationIterationsDone", function() {{
         main_addresses: List[Address],
         title: str = "Ethereum Correlation Graph",
         auto_open: bool = True,
-        params: Optional[Dict[str, Any]] = None
+        params: Optional[Dict[str, Any]] = None,
+        global_score: Optional[float] = None,
+        graph_analysis: Optional[Dict[str, Any]] = None
     ) -> str:
         """Crée et sauvegarde la visualisation dans un sous-dossier timestampé."""
-        net = self.create_visualization(graph, main_addresses, title)
+        net = self.create_visualization(graph, main_addresses, title, global_score, graph_analysis)
 
         # Créer un sous-dossier avec timestamp pour cette exécution
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
