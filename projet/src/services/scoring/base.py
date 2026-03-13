@@ -8,18 +8,45 @@ import networkx as nx
 
 @dataclass
 class NodeScore:
-    """Résultat du scoring d'un nœud."""
+    """Résultat du scoring d'un nœud avec dimensions temporelles.
+
+    Structure alignée avec TemporalScorer:
+    - total: Score total [0-100]
+    - direct: Score direct SD [0-1]
+    - indirect: Score indirect SI [0-1]
+    - intensite: S_intensite [0-1]
+    - recence: S_recence [0-1]
+    - synchronie: S_sync [0-1]
+    - equilibre: S_equilibre [0-1]
+    - interaction: Terme d'interaction [0-1]
+    - confidence: 'high' | 'medium' | 'low'
+    - metrics: Métriques détaillées
+
+    Champs legacy pour compatibilité autres scorers:
+    - activity: Score d'activité [0-100]
+    - proximity: Score de proximité [0-100]
+    - recency: Score de récence [0-100]
+    """
     total: float
-    activity: float
-    proximity: float
-    recency: float
+    direct: float = 0.0
+    indirect: float = 0.0
+    intensite: float = 0.0
+    recence: float = 0.0
+    synchronie: float = 0.0
+    equilibre: float = 0.0
+    interaction: float = 0.0
+    confidence: str = "low"
     metrics: Dict[str, Any] = field(default_factory=dict)
+    # Champs legacy pour compatibilité
+    activity: float = 0.0
+    proximity: float = 0.0
+    recency: float = 0.0
 
     def __repr__(self) -> str:
         return (f"NodeScore(total={self.total:.1f}, "
-                f"activity={self.activity:.1f}, "
-                f"proximity={self.proximity:.1f}, "
-                f"recency={self.recency:.1f})")
+                f"direct={self.direct:.2f}, "
+                f"indirect={self.indirect:.2f}, "
+                f"confidence={self.confidence})")
 
 
 class SimilarityStrategy(ABC):

@@ -6,6 +6,7 @@ from rich.panel import Panel
 from rich.columns import Columns
 
 from src.domain.models import Address, AddressRelationshipTable, RelationshipScore
+from src.infrastructure.price_service import get_price_service
 
 
 class RelationshipTableFormatter:
@@ -13,6 +14,7 @@ class RelationshipTableFormatter:
 
     def __init__(self, console: Console):
         self.console = console
+        self.price_service = get_price_service()
 
     def _create_table(self, title: str, address: Address, show_breakdown: bool = False) -> Table:
         """Crée un tableau de base pour les relations."""
@@ -130,20 +132,44 @@ class RelationshipTableFormatter:
         table1: AddressRelationshipTable,
         table2: AddressRelationshipTable
     ):
-        """Affiche le résumé de la corrélation."""
+        """Affiche le résumé de la corrélation avec prix ETH."""
         # Trouver la relation directe entre les deux adresses
         rel1 = table1.get_relationship(address2)
         rel2 = table2.get_relationship(address1)
+
+        # Prix ETH
+        eth_price = self.price_service.get_eth_price_eur()
+        price_info = self.price_service.get_price_info()
 
         content = []
         content.append(f"[bold]Correlation Score:[/bold] [{self._score_color(score)}]{score:.2f}[/{self._score_color(score)}]")
         content.append("")
 
+        # Afficher le prix ETH si disponible
+        if eth_price:
+            if eth_price >= 1000:
+                price_str = f"{eth_price:,.0f} €".replace(",", " ")
+            else:
+                price_str = f"{eth_price:.2f} €"
+            content.append(f"[dim]ETH Price: {price_str}[/dim]")
+            content.append("")
+
         if rel1:
             content.append(f"[dim]From {address1.address[:15]}... perspective:[/dim]")
             content.append(f"  Score: {rel1.direct_score:.2f}")
             content.append(f"  Transactions: {rel1.metrics.get('tx_count', 0)}")
-            content.append(f"  Volume: {rel1.metrics.get('total_volume', 0):.4f} ETH")
+
+            # Volume avec conversion EUR
+            volume_eth = rel1.metrics.get('total_volume', 0)
+            volume_eur = self.price_service.eth_to_eur(volume_eth)
+            if volume_eur:
+                if volume_eur >= 1000:
+                    eur_str = f"{volume_eur:,.0f} €".replace(",", " ")
+                else:
+                    eur_str = f"{volume_eur:.2f} €"
+                content.append(f"  Volume: {volume_eth:.4f} ETH (~{eur_str})")
+            else:
+                content.append(f"  Volume: {volume_eth:.4f} ETH")
 
         self.console.print(Panel(
             "\n".join(content),
@@ -208,19 +234,31 @@ class RelationshipTableFormatter:
             table_addr1.add_column("Nœud", style="dim", min_width=20)
             table_addr1.add_column("Score", justify="right", width=8)
             table_addr1.add_column("Tx", justify="right", width=6)
-            table_addr1.add_column("Volume (ETH)", justify="right", width=12)
+            table_addr1.add_column("Volume (ETH)", justify="right", width=14)
+            table_addr1.add_column("Volume (EUR)", justify="right", width=14)
 
             for rel in expanded_nodes_1[:limit]:
                 target_short = rel.target.address[:20] + "..."
                 score_style = self._score_color(rel.total_score)
                 tx_count = rel.metrics.get('tx_count', 0)
-                volume = rel.metrics.get('total_volume', 0)
+                volume_eth = rel.metrics.get('total_volume', 0)
+
+                # Conversion EUR
+                volume_eur = self.price_service.eth_to_eur(volume_eth)
+                if volume_eur:
+                    if volume_eur >= 1000:
+                        eur_str = f"{volume_eur:,.0f} €".replace(",", " ")
+                    else:
+                        eur_str = f"{volume_eur:.2f} €"
+                else:
+                    eur_str = "-"
 
                 table_addr1.add_row(
                     target_short,
                     f"[{score_style}]{rel.total_score:.1f}[/{score_style}]",
                     str(tx_count) if tx_count else "-",
-                    f"{volume:.4f}" if volume else "-"
+                    f"{volume_eth:.4f}" if volume_eth else "-",
+                    eur_str
                 )
 
             console.print(table_addr1)
@@ -235,19 +273,31 @@ class RelationshipTableFormatter:
             table_addr2.add_column("Nœud", style="dim", min_width=20)
             table_addr2.add_column("Score", justify="right", width=8)
             table_addr2.add_column("Tx", justify="right", width=6)
-            table_addr2.add_column("Volume (ETH)", justify="right", width=12)
+            table_addr2.add_column("Volume (ETH)", justify="right", width=14)
+            table_addr2.add_column("Volume (EUR)", justify="right", width=14)
 
             for rel in expanded_nodes_2[:limit]:
                 target_short = rel.target.address[:20] + "..."
                 score_style = self._score_color(rel.total_score)
                 tx_count = rel.metrics.get('tx_count', 0)
-                volume = rel.metrics.get('total_volume', 0)
+                volume_eth = rel.metrics.get('total_volume', 0)
+
+                # Conversion EUR
+                volume_eur = self.price_service.eth_to_eur(volume_eth)
+                if volume_eur:
+                    if volume_eur >= 1000:
+                        eur_str = f"{volume_eur:,.0f} €".replace(",", " ")
+                    else:
+                        eur_str = f"{volume_eur:.2f} €"
+                else:
+                    eur_str = "-"
 
                 table_addr2.add_row(
                     target_short,
                     f"[{score_style}]{rel.total_score:.1f}[/{score_style}]",
                     str(tx_count) if tx_count else "-",
-                    f"{volume:.4f}" if volume else "-"
+                    f"{volume_eth:.4f}" if volume_eth else "-",
+                    eur_str
                 )
 
             console.print(table_addr2)

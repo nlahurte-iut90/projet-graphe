@@ -11,14 +11,17 @@ from typing import Tuple, List, Optional, Dict, Set, Any
 from datetime import datetime
 
 from src.services.interactive_viz import InteractiveGraphVisualizer
-from src.services.scoring import SimpleNodeScorer
+from src.services.scoring import TemporalScorer
 
 
 class CorrelationService:
     """
-    Service de corrélation utilisant le SimpleNodeScorer.
+    Service de corrélation utilisant TemporalScorer unifié.
 
-    Score basé sur 3 dimensions: Activité (50%), Proximité (30%), Récence (20%)
+    Le TemporalScorer combine:
+    - Score Direct: Intensité (50%), Récence (25%), Synchronie (15%), Équilibre (10%)
+    - Score Indirect: Algorithme de Katz temporel avec conservation de volume
+    - Score Total: Combinaison dynamique avec terme d'interaction
     """
 
     def __init__(self, dune_adapter: DuneAdapter):
@@ -32,13 +35,13 @@ class CorrelationService:
         self.graph = nx.MultiDiGraph()
         self._table1: Optional[AddressRelationshipTable] = None
         self._table2: Optional[AddressRelationshipTable] = None
-        self._scorer: Optional[SimpleNodeScorer] = None
+        self._scorer: Optional[TemporalScorer] = None
 
-    def _get_scorer(self) -> SimpleNodeScorer:
-        """Retourne le scorer simple pour le graphe actuel."""
-        if self._scorer is None:
-            self._scorer = SimpleNodeScorer(self.graph)
-        return self._scorer
+    def _get_scorer(self) -> TemporalScorer:
+        """Retourne le scorer temporel pour le graphe actuel."""
+        # Recréer toujours le scorer pour éviter les caches obsolètes
+        # quand le graphe est modifié lors de l'expansion
+        return TemporalScorer(self.graph)
 
     def _add_transactions_to_graph(self, df: pd.DataFrame) -> Set[str]:
         """Helper pour ajouter un DataFrame de transactions au graphe.
@@ -128,12 +131,78 @@ class CorrelationService:
             return 0.5
 
 
+    def calculate_initial_scores(
+        self,
+        main_address: Address,
+        base_nodes: Optional[Set[str]] = None
+    ) -> AddressRelationshipTable:
+        """
+        Calcule les scores initiaux pour les nœuds de base avec TemporalScorer.
+
+        Cette méthode évalue les relations directes avec les dimensions temporelles:
+        - Intensité (50%): Volume et fréquence des transactions
+        - Récence (25%): Fraîcheur des transactions
+        - Synchronie (15%): Corrélation temporelle entrées/sorties
+        - Équilibre (10%): Bonus pour bidirectionnalité
+
+        Args:
+            main_address: Adresse principale
+            base_nodes: Ensemble des nœuds de base à évaluer (voisins directs).
+                       Si None, tous les nœuds connectés sont évalués.
+
+        Returns:
+            AddressRelationshipTable avec les scores initiaux
+        """
+        relationships = {}
+        scorer = self._get_scorer()
+
+        # Déterminer les nœuds à évaluer
+        if base_nodes is None:
+            base_nodes = set(self.graph.nodes())
+
+        for node_address in base_nodes:
+            if node_address == main_address.address:
+                continue
+
+            target = Address(node_address)
+
+            # Score avec TemporalScorer (dimensions temporelles)
+            node_score = scorer.score(main_address.address, node_address)
+
+            # Créer le RelationshipScore avec les nouvelles dimensions
+            # Le score_breakdown est déjà inclus dans node_score.metrics par TemporalScorer
+            rel_score = RelationshipScore(
+                source=main_address,
+                target=target,
+                direct_score=node_score.direct,
+                indirect_score=node_score.indirect,
+                confidence=node_score.confidence,
+                metrics={
+                    **node_score.metrics,
+                    'scorer_used': 'temporal'
+                }
+            )
+
+            relationships[node_address] = rel_score
+
+        return AddressRelationshipTable(
+            main_address=main_address,
+            relationships=relationships
+        )
+
     def calculate_relationship_scores(
         self,
         main_address: Address
     ) -> AddressRelationshipTable:
         """
         Génère la table des scores de relation pour une adresse principale.
+
+        Utilise TemporalScorer pour tous les nœuds avec les dimensions:
+        - Intensité (50%): Volume et fréquence
+        - Récence (25%): Fraîcheur des transactions
+        - Synchronie (15%): Corrélation temporelle
+        - Équilibre (10%): Bonus bidirectionnalité
+        - Indirect: Score Katz temporel
 
         Args:
             main_address: Adresse principale
@@ -143,9 +212,7 @@ class CorrelationService:
         """
         relationships = {}
         connected_nodes = set(self.graph.nodes())
-
-        # Récupérer le scorer principal
-        primary_scorer = self._get_scorer()
+        scorer = self._get_scorer()
 
         for node_address in connected_nodes:
             if node_address == main_address.address:
@@ -153,24 +220,21 @@ class CorrelationService:
 
             target = Address(node_address)
 
-            # Score principal avec le scorer configuré
-            node_score = primary_scorer.score(main_address.address, node_address)
-            direct_score = node_score.total
+            # Score avec TemporalScorer (tous les nœuds)
+            node_score = scorer.score(main_address.address, node_address)
 
             # Récupérer les métriques détaillées
+            # Le score_breakdown est déjà inclus dans node_score.metrics par TemporalScorer
             metrics = node_score.metrics
-            metrics['score_breakdown'] = {
-                'activity': node_score.activity,
-                'proximity': node_score.proximity,
-                'recency': node_score.recency
-            }
-            metrics['scorer_used'] = 'simple'
+            metrics['scorer_used'] = 'temporal'
 
-            # Créer le RelationshipScore avec le score direct uniquement
+            # Créer le RelationshipScore avec direct et indirect
             rel_score = RelationshipScore(
                 source=main_address,
                 target=target,
-                direct_score=direct_score,
+                direct_score=node_score.direct,
+                indirect_score=node_score.indirect,
+                confidence=node_score.confidence,
                 metrics=metrics
             )
 
@@ -181,57 +245,66 @@ class CorrelationService:
             relationships=relationships
         )
 
-    def _select_top_candidates_from_tables(
+    def _select_top_candidates_from_scores(
         self,
+        newly_discovered: Set[str],
         table1: AddressRelationshipTable,
         table2: AddressRelationshipTable,
-        candidate_nodes: List[Address],
         top_n: int,
         visited: Set[str]
     ) -> List[Address]:
         """
         Sélectionne les top_n nœuds avec les meilleurs scores de corrélation
-        parmi les nœuds candidats découverts au niveau précédent.
+        parmi les nouveaux nœuds découverts, en utilisant les scores TemporalScorer.
 
         Args:
-            table1: Table des relations depuis l'adresse 1
-            table2: Table des relations depuis l'adresse 2
-            candidate_nodes: Liste des nœuds candidats (découverts au niveau précédent)
-            top_n: Nombre de nœuds à sélectionner par table
+            newly_discovered: Set des nœuds découverts au niveau précédent
+            table1: Table des relations depuis l'adresse 1 (avec scores TemporalScorer)
+            table2: Table des relations depuis l'adresse 2 (avec scores TemporalScorer)
+            top_n: Nombre de nœuds à sélectionner par adresse principale
             visited: Set des adresses déjà visitées/exclues
 
         Returns:
             Liste des adresses uniques à expandre
         """
-        # Filtrer pour ne garder que les candidats non visités
-        candidate_set = {addr.address for addr in candidate_nodes if addr.address not in visited}
+        # Filtrer pour ne garder que les nœuds non visités
+        candidates = {addr for addr in newly_discovered if addr not in visited}
 
-        if not candidate_set:
+        if not candidates:
             return []
 
-        candidates = {}
+        selected = {}
 
-        # Récupérer les relations des candidats depuis la table 1
-        sorted1 = table1.get_top_relationships(n=len(table1.relationships))
+        # Fonction helper pour récupérer le score max d'un nœud entre les deux tables
+        def get_max_score(node_addr: str) -> float:
+            scores = []
+            rel1 = table1.get_relationship(Address(node_addr))
+            if rel1:
+                scores.append(rel1.total_score)
+            rel2 = table2.get_relationship(Address(node_addr))
+            if rel2:
+                scores.append(rel2.total_score)
+            return max(scores) if scores else 0.0
+
+        # Créer une liste de (score, address) pour tous les candidats
+        scored_candidates = [
+            (get_max_score(addr), addr)
+            for addr in candidates
+        ]
+
+        # Trier par score décroissant
+        scored_candidates.sort(reverse=True)
+
+        # Sélectionner les top_n par adresse principale (jusqu'à 2*top_n total)
         count = 0
-        for rel in sorted1:
-            if rel.target.address in candidate_set and rel.target.address not in visited:
-                candidates[rel.target.address] = rel.target
+        for score, addr in scored_candidates:
+            if addr not in selected:
+                selected[addr] = Address(addr)
                 count += 1
-                if count >= top_n:
+                if count >= top_n * 2:  # top_n par adresse principale
                     break
 
-        # Récupérer les relations des candidats depuis la table 2
-        sorted2 = table2.get_top_relationships(n=len(table2.relationships))
-        count = 0
-        for rel in sorted2:
-            if rel.target.address in candidate_set and rel.target.address not in visited:
-                candidates[rel.target.address] = rel.target
-                count += 1
-                if count >= top_n:
-                    break
-
-        return list(candidates.values())
+        return list(selected.values())
 
     def build_graph_with_expansion(
         self,
@@ -303,16 +376,22 @@ class CorrelationService:
 
         print(f"[Expansion] Level 0 neighbors (from both addresses): {len(level0_neighbors)} nodes")
 
-        # Calcul initial des scores
-        print(f"[Expansion] Calculating initial relationship scores...")
-        self._table1 = self.calculate_relationship_scores(address1)
-        self._table2 = self.calculate_relationship_scores(address2)
+        # ═══════════════════════════════════════════════════════
+        # SCORING INITIAL (Niveau 0) - Utilise TemporalScorer
+        # ═══════════════════════════════════════════════════════
+        print(f"[Expansion] Calculating initial scores for base nodes (using TemporalScorer)...")
+        self._table1 = self.calculate_initial_scores(address1, level0_neighbors)
+        self._table2 = self.calculate_initial_scores(address2, level0_neighbors)
 
-        # Afficher les meilleurs scores du niveau 0
+        # Afficher les meilleurs scores du niveau 0 (calculés par TemporalScorer)
         top1 = self._table1.get_top_relationships(n=3)
         top2 = self._table2.get_top_relationships(n=3)
-        print(f"[Expansion] Top correlations from Addr1: {[r.target.address[:10] + '...' for r in top1]}")
-        print(f"[Expansion] Top correlations from Addr2: {[r.target.address[:10] + '...' for r in top2]}")
+        print(f"[Expansion] Top correlations from Addr1 (TemporalScorer):")
+        for r in top1:
+            print(f"    {r.target.address[:10]}...: total={r.total_score:.1f}, direct={r.direct_score:.2f}, indirect={r.indirect_score:.2f}, conf={r.confidence}")
+        print(f"[Expansion] Top correlations from Addr2 (TemporalScorer):")
+        for r in top2:
+            print(f"    {r.target.address[:10]}...: total={r.total_score:.1f}, direct={r.direct_score:.2f}, indirect={r.indirect_score:.2f}, conf={r.confidence}")
 
         # ═══════════════════════════════════════════════════════
         # EXPANSION ITÉRATIVE (expansion_depth - 1 itérations)
@@ -320,27 +399,27 @@ class CorrelationService:
 
         # Le premier niveau d'expansion utilise les nœuds découverts au niveau 0
         # comme candidats (tous les voisins des adresses principales)
-        current_level_candidates = [Address(addr) for addr in level0_neighbors]
+        newly_discovered = level0_neighbors.copy()
 
         for level in range(1, expansion_depth):
             print(f"\n[Expansion] === LEVEL {level} (Expansion {level}/{expansion_depth - 1}) ===")
 
-            # ÉTAPE 1: SÉLECTION - Top nœuds parmi les candidats du niveau courant
-            # Seuls les nœuds découverts au niveau précédent sont éligibles
-            candidates = self._select_top_candidates_from_tables(
-                self._table1, self._table2, current_level_candidates, top_n, visited
+            # ÉTAPE 1: SÉLECTION - Top nœuds parmi les candidats découverts au niveau précédent
+            # Utilise les scores TemporalScorer pour sélectionner les meilleurs candidats
+            candidates = self._select_top_candidates_from_scores(
+                newly_discovered, self._table1, self._table2, top_n, visited
             )
 
             if not candidates:
-                print(f"[Expansion] No new candidates to expand from {len(current_level_candidates)} candidates, stopping")
+                print(f"[Expansion] No new candidates to expand from {len(newly_discovered)} newly discovered nodes, stopping")
                 break
 
-            print(f"[Expansion] Selected {len(candidates)} candidates from {len(current_level_candidates)} candidates")
+            print(f"[Expansion] Selected {len(candidates)} candidates from {len(newly_discovered)} newly discovered nodes")
             print(f"[Expansion] Selected addresses: {[c.address[:10] + '...' for c in candidates]}")
 
             # ÉTAPE 2: RÉCUPÉRATION - Fetch transactions pour chaque candidat
             print(f"[Expansion] Fetching transactions for selected candidates...")
-            newly_discovered: Set[str] = set()
+            newly_discovered = set()  # Réinitialiser pour ce niveau d'expansion
             successful_fetches = 0
             failed_fetches = 0
 
@@ -372,15 +451,18 @@ class CorrelationService:
             self._table1 = self.calculate_relationship_scores(address1)
             self._table2 = self.calculate_relationship_scores(address2)
 
-            # Afficher l'évolution
+            # Afficher l'évolution avec les scores TemporalScorer
             new_top1 = self._table1.get_top_relationships(n=3)
             new_top2 = self._table2.get_top_relationships(n=3)
-            print(f"[Expansion] Top correlations from Addr1: {[r.target.address[:10] + '...' for r in new_top1]}")
-            print(f"[Expansion] Top correlations from Addr2: {[r.target.address[:10] + '...' for r in new_top2]}")
+            print(f"[Expansion] Top correlations from Addr1 (by TemporalScorer):")
+            for r in new_top1:
+                print(f"    {r.target.address[:10]}...: total={r.total_score:.1f}, direct={r.direct_score:.2f}, indirect={r.indirect_score:.2f}, conf={r.confidence}")
+            print(f"[Expansion] Top correlations from Addr2 (by TemporalScorer):")
+            for r in new_top2:
+                print(f"    {r.target.address[:10]}...: total={r.total_score:.1f}, direct={r.direct_score:.2f}, indirect={r.indirect_score:.2f}, conf={r.confidence}")
 
-            # Préparer les candidats pour le prochain niveau
-            # Seuls les nœuds nouvellement découverts sont éligibles pour l'expansion suivante
-            current_level_candidates = [Address(addr) for addr in newly_discovered]
+            # Les nouveaux nœuds découverts deviennent les candidats pour le prochain niveau
+            # Leur scores ont été calculés par TemporalScorer ci-dessus
 
         print(f"\n[Expansion] === COMPLETE ===")
         print(f"[Expansion] Final graph: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges")
@@ -608,9 +690,11 @@ class CorrelationService:
                 "edges": num_edges,
                 "notes": f"Graph built with expansion_depth={expansion_depth}, top_n={top_n}, base_tx_limit={base_tx_limit}, expansion_tx_limit={expansion_tx_limit}",
                 "has_path": has_path,
-                "score": relationship.direct_score if relationship else 0.0,
-                "tx_count": relationship.metrics.get('tx_count', 0) if relationship else 0,
-                "total_volume": relationship.metrics.get('total_volume', 0) if relationship else 0,
+                "direct_score": relationship.direct_score if relationship else 0.0,
+                "indirect_score": relationship.indirect_score if relationship else 0.0,
+                "confidence": relationship.confidence if relationship else "low",
+                "tx_count": relationship.metrics.get('n_total', 0) if relationship else 0,
+                "total_volume": relationship.metrics.get('v_total', 0) if relationship else 0,
                 "expansion_depth": expansion_depth,
                 "top_n": top_n,
                 "base_tx_limit": base_tx_limit,

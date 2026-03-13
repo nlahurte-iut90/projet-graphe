@@ -33,20 +33,40 @@ class CorrelationResult:
 
 @dataclass
 class RelationshipScore:
-    """Score de relation entre deux adresses."""
+    """Score de relation entre deux adresses avec scoring temporel."""
     source: Address
     target: Address
-    direct_score: float  # Score basé sur les transactions directes
-    total_score: float = 0.0  # Score total
+    direct_score: float       # Score direct SD [0-1]
+    indirect_score: float = 0.0  # Score indirect SI [0-1]
+    total_score: float = 0.0  # Score total combiné [0-100]
+    confidence: str = "low"    # 'high' | 'medium' | 'low'
     metrics: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
-        """Calcule le total_score égal au score direct."""
-        object.__setattr__(self, 'total_score', self.direct_score)
+        """Calcule le total_score comme combinaison pondérée direct + indirect.
+
+        Utilise les poids dynamiques selon le nombre de transactions:
+        - N < 3: w_dir=0.4, w_ind=0.55 (privilégier indirect)
+        - N >= 3: w_dir=0.7, w_ind=0.25 (privilégier direct)
+        """
+        tx_count = self.metrics.get('tx_count', 0)
+
+        # Poids dynamiques selon richesse des données
+        if tx_count < 3:
+            w_dir, w_ind = 0.4, 0.55
+        else:
+            w_dir, w_ind = 0.7, 0.25
+
+        # Formule avec terme d'interaction
+        interaction = 0.05 * self.direct_score * self.indirect_score
+        total = w_dir * self.direct_score + w_ind * self.indirect_score + interaction
+
+        object.__setattr__(self, 'total_score', min(total * 100, 100.0))
 
     def __repr__(self) -> str:
         return (f"Relationship({self.source.address[:8]}... -> {self.target.address[:8]}..., "
-                f"score={self.direct_score:.1f})")
+                f"direct={self.direct_score:.2f}, indirect={self.indirect_score:.2f}, "
+                f"total={self.total_score:.1f}, confidence={self.confidence})")
 
 
 @dataclass
