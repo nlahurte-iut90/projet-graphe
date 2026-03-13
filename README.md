@@ -7,6 +7,10 @@ Analyse des relations entre adresses Ethereum en utilisant la théorie des graph
 Ce projet universitaire a pour but d'utiliser les propriétés de la théorie des graphes.
 Cet outil récupère les transactions Ethereum via l'API Dune Analytics, construit un graphe de relations entre adresses, et calcule des scores de corrélation basés sur l'analyse temporelle des transactions.
 
+## Utilisation
+
+uv run python3 -m src.main
+
 ---
 
 ## Workflow Détaillé
