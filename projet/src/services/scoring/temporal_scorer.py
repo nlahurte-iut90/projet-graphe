@@ -26,7 +26,7 @@ class TemporalScorerConfig:
     """
     lambda_rec: float = 0.000154      # Décroissance récence (demi-vie 15j)
     lambda_chain: float = 0.0001      # Décroissance temporelle chaîne
-    theta: float = 0.7                # Atténuation profondeur Katz (augmenté pour plus de propagation)
+    theta: float = 0.5                # Atténuation profondeur Katz (0.5^depth: 0.5, 0.25, 0.125...)
     rho: float = 1.5                  # Sévérité conservation volume
     delta_t_blocks: int = 100         # Fenêtre synchronie (±100 blocs)
     max_degree_explore: int = 100     # Early stopping hubs
@@ -38,9 +38,9 @@ class TemporalScorerConfig:
     absolute_v_ref: float = 100.0     # Référence fixe pour mode absolu (100 ETH)
     max_paths: int = 500              # Limite de chemins pour indirect
     epsilon: float = 1e-9             # Précision numérique
-    # Paramètres sigmoïde pour propagation amplifiée
-    kappa_sigmoid: float = 4.0        # Moins raide = transition plus douce
-    tau_median_ref: float = 0.05      # Médiane plus basse = scores plus élevés
+    # Paramètres sigmoïde pour propagation bien différenciée
+    kappa_sigmoid: float = 8.0        # Plus raide = meilleure différenciation
+    tau_median_ref: float = 0.02      # Médiane basse = échelle étendue
 
 
 class TemporalScorer(SimilarityStrategy):
@@ -585,8 +585,9 @@ class TemporalScorer(SimilarityStrategy):
         """
         weight = edge.get("weight", 0)
         if weight <= 0:
-            # Transfert ERC20 ou valeur nulle - score minimum pour propagation
-            return 0.3
+            # Transfert ERC20 ou valeur nulle - score faible mais non nul
+            # 0.01 equivaut ~0.002 ETH sur l'echelle log (entre 0.001 et 0.01)
+            return 0.01
 
         # Normalisation logarithmique
         # Supposons qu'une transaction de 100 ETH est "parfaite" (score 1.0)
