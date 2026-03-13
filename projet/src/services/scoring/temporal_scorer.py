@@ -284,11 +284,13 @@ class TemporalScorer(SimilarityStrategy):
         # Facteur de fréquence (saturation progressive) - toujours calculé
         freq_factor = 1.0 - math.exp(-n_total / self.config.tau)
 
-        # Si pas de volume (ex: transferts ERC20), score basé uniquement sur fréquence
+        # Si pas de volume (ex: transferts ERC20), score basé sur fréquence pure
         if v_total <= 0:
-            # Score minimal basé sur le nombre de transactions
-            # 1 tx = ~0.06, 5 tx = ~0.28, 10 tx = ~0.48
-            return 0.1 * freq_factor
+            # Score basé uniquement sur le nombre de transactions
+            # 1 tx = 0.10, 5 tx = 0.28, 10 tx = 0.50, 50 tx = 0.96
+            # Formule: min(n_total / (n_total + tau), 1.0) * saturation
+            tx_score = min(n_total / (n_total + self.config.tau * 0.5), 1.0)
+            return tx_score
 
         if v_ref <= 0:
             v_ref = 1.0
@@ -536,9 +538,11 @@ class TemporalScorer(SimilarityStrategy):
                     else:
                         time_penalty = 1.0
 
-                    # Calculer la pénalité hub
+                    # Calculer la pénalité hub (atténuée pour ne pas pénaliser trop fort)
                     if depth == 0:
-                        hub_penalty = 1.0 / math.sqrt(max(degree, 1))
+                        # Pénalité douce: ln(degree) au lieu de sqrt(degree)
+                        # Un hub avec 100 connexions aura ~0.5 au lieu de 0.1
+                        hub_penalty = 1.0 / (1.0 + 0.2 * math.log(max(degree, 2)))
                     else:
                         hub_penalty = 1.0
 
