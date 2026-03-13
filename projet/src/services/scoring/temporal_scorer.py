@@ -26,7 +26,7 @@ class TemporalScorerConfig:
     """
     lambda_rec: float = 0.000154      # Décroissance récence (demi-vie 15j)
     lambda_chain: float = 0.0001      # Décroissance temporelle chaîne
-    theta: float = 0.4                # Atténuation profondeur Katz
+    theta: float = 0.7                # Atténuation profondeur Katz (augmenté pour plus de propagation)
     rho: float = 1.5                  # Sévérité conservation volume
     delta_t_blocks: int = 100         # Fenêtre synchronie (±100 blocs)
     max_degree_explore: int = 100     # Early stopping hubs
@@ -38,9 +38,9 @@ class TemporalScorerConfig:
     absolute_v_ref: float = 100.0     # Référence fixe pour mode absolu (100 ETH)
     max_paths: int = 500              # Limite de chemins pour indirect
     epsilon: float = 1e-9             # Précision numérique
-    # Paramètres sigmoïde ajustés : S_indirect=0 doit donner ~0, pas ~0.27
-    kappa_sigmoid: float = 6.0        # Paramètre sigmoïde (plus raide)
-    tau_median_ref: float = 0.15      # Médiane de référence pour sigmoïde (plus basse = score plus faible quand pas de chemins)
+    # Paramètres sigmoïde pour propagation amplifiée
+    kappa_sigmoid: float = 4.0        # Moins raide = transition plus douce
+    tau_median_ref: float = 0.05      # Médiane plus basse = scores plus élevés
 
 
 class TemporalScorer(SimilarityStrategy):
@@ -559,7 +559,8 @@ class TemporalScorer(SimilarityStrategy):
                             ratio = min(new_first_volume, last_volume) / max(new_first_volume, last_volume)
                             conservation = ratio ** self.config.rho
                         else:
-                            conservation = 0.0
+                            # Transferts ERC20 (volume=0) - conservation neutre pour permettre propagation
+                            conservation = 0.5
 
                         # Contribution avec atténuation Katz
                         contribution = (self.config.theta ** depth) * new_score * conservation
@@ -594,10 +595,13 @@ class TemporalScorer(SimilarityStrategy):
         Calcule un score local [0, 1] pour une arête.
 
         Basé sur la valeur de la transaction relative au volume total du graphe.
+        NOTE: Retourne un score minimum de 0.3 même pour weight=0 (ERC20)
+        pour permettre la propagation des scores via les transferts de tokens.
         """
         weight = edge.get("weight", 0)
         if weight <= 0:
-            return 0.0
+            # Transfert ERC20 ou valeur nulle - score minimum pour propagation
+            return 0.3
 
         # Normalisation logarithmique
         # Supposons qu'une transaction de 100 ETH est "parfaite" (score 1.0)
