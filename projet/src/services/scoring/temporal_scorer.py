@@ -521,8 +521,9 @@ class TemporalScorer(SimilarityStrategy):
                     if block is None:
                         continue
 
-                    # Vérifier que la transaction est après le dernier bloc du chemin
-                    if path_times and block <= max(path_times):
+                    # Vérifier que la transaction est après ou au même moment que le dernier bloc du chemin
+                    # NOTE: On autorise l'égalité car les transactions dans le même bloc peuvent être liées
+                    if path_times and block < max(path_times):
                         continue
 
                     # Calculer le score local de l'arête
