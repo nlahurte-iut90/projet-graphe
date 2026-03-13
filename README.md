@@ -9,7 +9,7 @@ Cet outil récupère les transactions Ethereum via l'API Dune Analytics, constru
 
 ## Utilisation
 
-uv run python3 -m src.main
+uv run python3 -m src.main (cle API Dune a configurer au préalable)
 
 ---
 
