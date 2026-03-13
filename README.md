@@ -14,7 +14,7 @@ Cet outil récupère les transactions Ethereum via l'API Dune Analytics, constru
 # Lancer l'application
 uv run python -m src.main
 ```
-Tous les output sont dans /src/output
+Tous les output sont dans /output
 
 ---
 
@@ -355,4 +355,5 @@ Score de corrélation global: 24.76
 - **Rate Limiting** : Délai de 0.5s entre les requêtes d'expansion
 - **Normalisation** : Les adresses sont normalisées en minuscules
 - **ERC20** : Les transferts de tokens (volume ~0) sont traités avec un score minimal
-- **Developpement** : claude code ( avec k2p5-coding ) et mon cerveau ont été uriliser pour le développement de ce projet 
+- **Developpement** : claude code ( avec k2p5-coding ) et mon cerveau ont été uriliser pour le développement de ce projet
+- **Utilisation** : Des parametres élevée augmente la précision du score 
