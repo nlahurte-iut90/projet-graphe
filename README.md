@@ -93,7 +93,7 @@ SD = 0.50 × I + 0.25 × R + 0.15 × S + 0.10 × E
 |--------------------------|----------------------------------------------|------------------------------------------------------------|------------------------------------------------------|
 | **I — Intensité** (50%)  | `min(ln(1+V)/ln(1+V_ref), 1) × (1-e^(-N/τ))` | Pénalise les micro-transactions, récompense la régularité  | Détecter les relations économiques significatives    |
 | **R — Récence** (25%)    | `exp(-λ_rec × Δ_blocks)`                     | Décroissance exponentielle avec demi-vie ~15 jours         | Privilégier les relations actives sur les anciennes  |
-| **S — Synchronie** (15%) | `Σ 1[|τ_out - τ_in| ≤ Δ_sync] / N_tot`       | Compte les paires de transactions temporellement corrélées | Identifier les échanges rapides                      |
+| **S — Synchronie** (15%) | `Σ 1[|τ_out - τ_in| ≤ Δ_sync] / N_tot` | Compte les paires de transactions temporellement corrélées | Identifier les échanges rapides                      |
 | **E — Équilibre** (10%)  | `0.5 × min(V_out, V_in) / V_total`           | Bonus pour réciprocité équilibrée                          | Détecter relations symétriques vs unidirectionnelles |
 
 **Paramètres clés :**
