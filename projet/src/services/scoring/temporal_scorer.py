@@ -30,7 +30,7 @@ class TemporalScorerConfig:
     rho: float = 1.5                  # Sévérité conservation volume
     delta_t_blocks: int = 100         # Fenêtre synchronie (±100 blocs)
     max_degree_explore: int = 100     # Early stopping hubs
-    k_max: int = 2                    # Profondeur max recherche (réduit pour graphes peu profonds)
+    k_max: int = 5                    # Profondeur max recherche (augmenté pour supporter expansion_depth > 2)
     v_percentile_ref: float = 90.0    # Percentile pour normalisation volume (réduit pour plus de sensibilité)
     tau: float = 15.0                 # Constante saturation (augmenté pour moins de saturation rapide)
     # Paramètres de normalisation du volume (P1-003)
