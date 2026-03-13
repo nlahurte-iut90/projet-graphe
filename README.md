@@ -1,6 +1,6 @@
-# Ethereum Address Correlation Analyzer
+# Analyse de correlation entre addresses ethereum    
 
-Analyse des relations entre adresses Ethereum en utilisant la théorie des graphes et un scoring temporel avancé.
+Analyse des relations entre adresses Ethereum en utilisant la théorie des graphes.
 
 ## Vue d'ensemble
 
@@ -12,7 +12,7 @@ Cet outil récupère les transactions Ethereum via l'API Dune Analytics, constru
 
 ### 1. Configuration Interactive (`src/main.py`)
 
-L'outil démarre avec une configuration interactive via la console Rich :
+L'outil démarre avec une configuration interactive via le CLI:
 
 ```
 ╔════════════════════════════════════════════════════════════╗
@@ -23,13 +23,13 @@ L'outil démarre avec une configuration interactive via la console Rich :
 
 #### Paramètres configurables :
 
-| Paramètre | Description | Défaut |
-|-----------|-------------|--------|
-| **Adresses** | Deux adresses Ethereum à analyser | vitalik.eth + exemple |
-| **Profondeur d'expansion** | Niveaux de découverte de nœuds (1=base, 2=1 niveau, etc.) | 2 |
-| **Top N** | Nombre de nœuds à sélectionner par niveau | 3 |
-| **Limite TX (base)** | Transactions à récupérer pour les adresses principales | 5 |
-| **Limite TX (expansion)** | Transactions à récupérer pour les nœuds découverts | 3 |
+| Paramètre                  | Description                                               | Défaut                |
+|----------------------------|-----------------------------------------------------------|-----------------------|
+| **Adresses**               | Deux adresses Ethereum à analyser                         | vitalik.eth + exemple |
+| **Profondeur d'expansion** | Niveaux de découverte de nœuds (1=base, 2=1 niveau, etc.) |            2          |
+| **Top N**                  | Nombre de nœuds à sélectionner par niveau                 |            3          | 
+| **Limite TX (base)**       | Transactions à récupérer pour les adresses principales    |            5          |
+| **Limite TX (expansion)**  | Transactions à récupérer pour les nœuds découverts        |            3          |
 
 #### Options de sortie :
 - Graphique statique matplotlib
@@ -47,23 +47,23 @@ Le processus d'expansion se déroule en plusieurs niveaux :
 ```
 [Expansion] === LEVEL 0 (Base) ===
 [Expansion] Fetching transactions for main addresses...
-[Expansion] Level 0: 8 nodes, 10 edges
+[Expansion] Level 0: X nodes, X edges
 ```
 
 1. **Récupération des transactions** pour les deux adresses principales via `DuneAdapter`
-2. **Construction du graphe** : les transactions deviennent des arêtes pondérées (poids = valeur ETH)
-3. **Découverte des voisins** : identification des nœuds de niveau 0 (adresses en contact direct)
+2. **Construction du graphe** : les transactions deviennent des arêtes pondérées (poids = valeur de tx en ETH)
+3. **Découverte des voisins** : identification des nœuds de niveau 0 (adresses en contact direct avec une address principale)
 
 #### Niveaux d'Expansion (1+)
 ```
 [Expansion] === LEVEL 1 (Expansion 1/1) ===
-[Expansion] Selected 6 candidates from 6 newly discovered nodes
+[Expansion] Selected X candidates from X newly discovered nodes
 [Expansion] Fetching transactions for selected candidates...
 ```
 
 Pour chaque niveau d'expansion :
 
-1. **Sélection** : Les `top_n` nœuds avec les meilleurs scores sont sélectionnés comme candidats
+1. **Sélection** : Les `top_n` nœuds avec les meilleurs scores de correlation avec address principale sont sélectionnés comme candidats
 2. **Récupération** : Récupération des transactions pour chaque candidat
 3. **Extension** : Ajout des nouvelles transactions au graphe
 4. **Recalcul** : Recalcul de tous les scores avec les nouvelles données
@@ -76,7 +76,7 @@ Le système de scoring combine **trois types de scores** pour capturer différen
 
 ---
 
-#### 🎯 Score Direct (SD) — Relations immédiates
+#### Score Direct — Relations immédiates
 
 Mesure la force d'une relation **bidirectionnelle directe** entre deux adresses.
 
@@ -84,12 +84,12 @@ Mesure la force d'une relation **bidirectionnelle directe** entre deux adresses.
 SD = 0.50 × I + 0.25 × R + 0.15 × S + 0.10 × E
 ```
 
-| Composante | Formule | Justification | Contexte d'utilisation |
-|------------|---------|---------------|------------------------|
-| **I — Intensité** (50%) | `min(ln(1+V)/ln(1+V_ref), 1) × (1-e^(-N/τ))` | Pénalise les micro-transactions, récompense la régularité | Détecter les relations économiques significatives vs. le bruit (dust, erreurs) |
-| **R — Récence** (25%) | `exp(-λ_rec × Δ_blocks)` | Décroissance exponentielle avec demi-vie ~15 jours | Privilégier les relations actives sur les historiques anciens |
-| **S — Synchronie** (15%) | `Σ 1[|τ_out - τ_in| ≤ Δ_sync] / N_tot` | Compte les paires de transactions temporellement corrélées | Identifier les échanges rapides (signe de coordination) |
-| **E — Équilibre** (10%) | `0.5 × min(V_out, V_in) / V_total` | Bonus pour réciprocité équilibrée | Détecter les relations symétriques (partenaires) vs. unidirectionnelles (services) |
+| Composante               | Formule                                      | Justification                                              | Contexte d'utilisation                               |
+|--------------------------|----------------------------------------------|------------------------------------------------------------|------------------------------------------------------|
+| **I — Intensité** (50%)  | `min(ln(1+V)/ln(1+V_ref), 1) × (1-e^(-N/τ))` | Pénalise les micro-transactions, récompense la régularité  | Détecter les relations économiques significatives    |
+| **R — Récence** (25%)    | `exp(-λ_rec × Δ_blocks)`                     | Décroissance exponentielle avec demi-vie ~15 jours         | Privilégier les relations actives sur les anciennes  |
+| **S — Synchronie** (15%) | `Σ 1[|τ_out - τ_in| ≤ Δ_sync] / N_tot`       | Compte les paires de transactions temporellement corrélées | Identifier les échanges rapides                      |
+| **E — Équilibre** (10%)  | `0.5 × min(V_out, V_in) / V_total`           | Bonus pour réciprocité équilibrée                          | Détecter relations symétriques vs unidirectionnelles |
 
 **Paramètres clés :**
 - `V_ref` = percentile 95 du volume de l'adresse principale (normalisation adaptative)
@@ -107,12 +107,12 @@ Bob renvoie 9 ETH à Alice 5 min plus tard (tx 2)
 → Synchronie = 1/2 = 0.5 (1 paire synchrone sur 2 tx)
 → Équilibre = 0.5 × min(10,9)/19 = 0.24
 
-SD = 0.50×0.05 + 0.25×1.0 + 0.15×0.5 + 0.10×0.24 = 0.34 (34%)
+Score Direct = 0.50×0.05 + 0.25×1.0 + 0.15×0.5 + 0.10×0.24 = 0.34 (34%)
 ```
 
 ---
 
-#### 🔗 Score Indirect (SI) — Connexions cachées
+#### Score Indirect — Connexions cachées
 
 Pour les adresses sans transactions directes, mesure la corrélation via les **chemins indirects** (amis d'amis).
 
@@ -122,13 +122,13 @@ SI = Σ_paths θ^depth × path_score × conservation
 
 **Composantes du chemin :**
 
-| Élément | Formule | Utilité |
-|---------|---------|---------|
-| **Atténuation Katz** | `θ^depth` avec `θ = 0.7` | Pénalise les chemins longs : 1 saut = 0.7, 2 sauts = 0.49, 3 sauts = 0.34 |
-| **Score local** | `s_edge = min(ln(1+w)/ln(51), 1)` | Force de chaque arête du chemin (basé sur le volume transité) |
-| **Pénalité temporelle** | `exp(-λ_chain × gap_blocks)` | Pénalise les pauses longues entre transactions consécutives |
-| **Pénalité hub** | `1/(1 + 0.2×ln(degree))` | Réduit l'impact des nœuds ultra-connectés (exchanges, contrats populaires) |
-| **Conservation** | `(ratio^ρ) × v_mag` | Vérifie que le volume est préservé (signe de flux cohérent) |
+| Élément                 | Formule                           | Utilité                                                                    |
+|-------------------------|-----------------------------------|----------------------------------------------------------------------------|
+| **Atténuation Katz**    | `θ^depth` avec `θ = 0.7`          | Pénalise les chemins longs : 1 saut = 0.7, 2 sauts = 0.49, 3 sauts = 0.34  |
+| **Score local**         | `s_edge = min(ln(1+w)/ln(51), 1)` | Force de chaque arête du chemin (basé sur le volume transité)              |
+| **Pénalité temporelle** | `exp(-λ_chain × gap_blocks)`      | Pénalise les pauses longues entre transactions consécutives                |
+| **Pénalité hub**        | `1/(1 + 0.2×ln(degree))`          | Réduit l'impact des nœuds ultra-connectés (exchanges, contrats populaires) |
+| **Conservation**        | `(ratio^ρ) × v_mag`               | Vérifie que le volume est préservé (signe de flux cohérent)                |
 
 **Pourquoi ces pénalités ?**
 - **Katz** : Un chemin A→B→C→D est moins significatif que A→B direct
@@ -150,7 +150,7 @@ Contribution = 0.49 × 1.0 × 1.0 × 0.26 × 0.99 = 0.13
 
 ---
 
-#### 📡 Score Propagé (SP) — Expansion du graphe
+#### Score Propagé — Expansion du graphe
 
 Pour les nœuds découverts lors de l'expansion, propage le score depuis les **nœuds connus** via les liens existants.
 
@@ -160,10 +160,10 @@ SP(target) = Σ_{p ∈ parents} S_parent × w(p,target) × γ^d
 où w(p,t) = s_edge(p,t) / Σ_k s_edge(p,k)  (poids normalisé)
 ```
 
-| Paramètre | Valeur | Signification |
-|-----------|--------|---------------|
-| `γ = 0.7` | Facteur de distance | Atténuation par saut depuis l'adresse principale |
-| `w(p,t)` | Poids de propagation | Proportion de la "force" du parent dévolue à cet enfant |
+| Paramètre | Valeur               | Signification                                           |
+|-----------|----------------------|---------------------------------------------------------|
+| `γ = 0.7` | Facteur de distance  | Atténuation par saut depuis l'adresse principale        |
+| `w(p,t)`  | Poids de propagation | Proportion de la "force" du parent dévolue à cet enfant |
 
 **Contexte d'utilisation :**
 Quand l'expansion découvre une nouvelle adresse X (via A→X), on calcule :
@@ -175,7 +175,7 @@ Cela permet d'estimer la pertinence des nœuds distants même sans données comp
 
 ---
 
-#### 🏆 Score Total — Combinaison pondérée
+####  Score Total — Combinaison pondérée
 
 ```
 ST = w_dir × SD + w_ind × SI + w_prop × SP + 0.05 × SD × SI
@@ -183,10 +183,10 @@ ST = w_dir × SD + w_ind × SI + w_prop × SP + 0.05 × SD × SI
 
 **Poids dynamiques** (adaptatifs selon la richesse des données) :
 
-| Cas | N transactions | w_dir | w_ind | w_prop | Justification |
-|-----|----------------|-------|-------|--------|---------------|
-| **Données pauvres** | N < 3 | 0.35 | 0.45 | 0.15 | Peu de données directes → on privilégie l'indirect (réseau) |
-| **Données riches** | N ≥ 3 | 0.60 | 0.20 | 0.15 | Assez d'historique → on privilégie le direct (plus fiable) |
+| Cas                 | N transactions | w_dir | w_ind | w_prop | Justification                                               |
+|---------------------|----------------|-------|-------|--------|-------------------------------------------------------------|
+| **Données pauvres** | N < 3          | 0.35  | 0.45  | 0.15   | Peu de données directes → on privilégie l'indirect (réseau) |
+| **Données riches**  | N ≥ 3          | 0.60  | 0.20  | 0.15   | Assez d'historique → on privilégie le direct (plus fiable)  |
 
 **Terme d'interaction** (`0.05 × SD × SI`) :
 - Bonus pour les adresses ayant **à la fois** une relation directe forte ET des connexions indirectes
@@ -206,12 +206,12 @@ ST = 0.27 + 0.024 + 0 + 0.0027 = 0.297 → 29.7%
 
 #### 📊 Tableau récapitulatif des scores
 
-| Score | Quand utilisé ? | Formule clé | Seuil "intéressant" |
-|-------|-----------------|-------------|---------------------|
-| **SD** | Toujours (si tx directes) | Combinaison pondérée 4D | > 0.3 (relation directe significative) |
-| **SI** | SD faible ou nul | Katz temporel | > 0.1 (connexion indirecte détectable) |
-| **SP** | Nœuds d'expansion uniquement | Propagation pondérée | > 0.05 (nœud potentiellement lié) |
-| **ST** | Score final affiché | Combinaison dynamique | > 20 (relation à investiguer) |
+| Score | Quand utilisé ?               | Formule clé             | Seuil "intéressant"                    |
+|------- |------------------------------|-------------------------|----------------------------------------|
+| **SD** | Toujours (si tx directes)    | Combinaison pondérée 4D | > 0.3 (relation directe significative) |
+| **SI** | SD faible ou nul             | Katz temporel           | > 0.1 (connexion indirecte détectable) |
+| **SP** | Nœuds d'expansion uniquement | Propagation pondérée    | > 0.05 (nœud potentiellement lié)      |
+| **ST** | Score final affiché          | Combinaison dynamique   | > 20 (relation à investiguer)          |
 
 ---
 
@@ -358,3 +358,4 @@ Score de corrélation global: 24.76
 - **Rate Limiting** : Délai de 0.5s entre les requêtes d'expansion
 - **Normalisation** : Les adresses sont normalisées en minuscules
 - **ERC20** : Les transferts de tokens (volume ~0) sont traités avec un score minimal
+- **Developpement** : claude code ( avec k2p5-coding ) et mon cerveau ont été uriliser pour le développement de ce projet 
