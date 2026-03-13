@@ -285,6 +285,11 @@ def run_analysis(console: Console, params: dict):
         export_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         exporter = RelationshipTableExporter(output_dir=output_dir if output_dir else "output")
 
+        # Passer les données d'analyse de graphe à l'exporter
+        graph_analysis = getattr(correlation_service, '_graph_analysis', None)
+        if graph_analysis:
+            exporter.set_graph_analysis(graph_analysis)
+
         if params.get('export_json'):
             try:
                 json_path = exporter.export([table1, table2], format="json", filename=export_timestamp)
