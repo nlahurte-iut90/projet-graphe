@@ -789,8 +789,11 @@ class TemporalScorer(SimilarityStrategy):
             if isinstance(timestamp, str):
                 if timestamp == 'unknown':
                     return None
-                # Parser ISO format
-                ts = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                # Nettoyer le format (ex: "2026-02-21 19:15:59.000 UTC" -> "2026-02-21T19:15:59.000+00:00")
+                cleaned = timestamp.replace(" UTC", "+00:00").replace(" ", "T")
+                if '+' not in cleaned and 'Z' not in cleaned:
+                    cleaned += '+00:00'
+                ts = datetime.fromisoformat(cleaned.replace("Z", "+00:00"))
             elif isinstance(timestamp, datetime):
                 ts = timestamp
             else:
