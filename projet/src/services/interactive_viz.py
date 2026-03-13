@@ -599,7 +599,7 @@ function resetNodeColors() {{
 function showToast(msg, type) {{
     const t = document.createElement('div');
     t.style.cssText = 'position:fixed;top:24px;right:24px;padding:14px 24px;font-family:"SF Mono",Monaco,"Cascadia Code",monospace;font-size:11px;font-weight:400;z-index:10000;letter-spacing:0.04em;text-transform:uppercase;' +
-        'box-shadow:0 8px 32px rgba(0,0,0,0.08);backdrop-filter:blur(12px);background:rgba(255,255,255,0.96);color:#000;border:1px solid #000;' +
+        'backdrop-filter:blur(12px);background:rgba(255,255,255,0.96);color:#000;border:1px solid #000;border-radius:8px;' +
         'transition:all 0.3s cubic-bezier(0.4,0,0.2,1);';
     t.textContent = msg;
     document.body.appendChild(t);
@@ -670,6 +670,30 @@ network.once("stabilizationIterationsDone", function() {{
         animation: {{ duration: 500, easingFunction: 'easeInOutQuad' }}
     }});
 }});
+
+// Keyboard navigation with arrow keys
+const PAN_STEP = 50;
+document.addEventListener('keydown', function(e) {{
+    const pos = network.getViewPosition();
+    switch(e.key) {{
+        case 'ArrowUp':
+            e.preventDefault();
+            network.moveTo({{ position: {{ x: pos.x, y: pos.y - PAN_STEP }}, animation: false }});
+            break;
+        case 'ArrowDown':
+            e.preventDefault();
+            network.moveTo({{ position: {{ x: pos.x, y: pos.y + PAN_STEP }}, animation: false }});
+            break;
+        case 'ArrowLeft':
+            e.preventDefault();
+            network.moveTo({{ position: {{ x: pos.x - PAN_STEP, y: pos.y }}, animation: false }});
+            break;
+        case 'ArrowRight':
+            e.preventDefault();
+            network.moveTo({{ position: {{ x: pos.x + PAN_STEP, y: pos.y }}, animation: false }});
+            break;
+    }}
+}});
 """
 
     def _generate_legend_html(self, global_score: Optional[float] = None) -> str:
@@ -687,7 +711,7 @@ network.once("stabilizationIterationsDone", function() {{
         depth_selector = """
             <div style="margin-top:16px;padding-top:16px;border-top:1px solid #e0e0e0;">
                 <div style="font-size:10px;font-weight:500;margin-bottom:10px;text-transform:uppercase;letter-spacing:0.08em;color:#333;">Depth (hops)</div>
-                <input type="number" id="depthSelector" min="1" max="10" value="" placeholder="All" oninput="updateDepthFilter()" style="width:100%;padding:8px 10px;font-size:11px;border:1px solid #000;border-radius:0;background:#fff;font-family:inherit;box-sizing:border-box;">
+                <input type="number" id="depthSelector" min="1" max="10" value="" placeholder="All" oninput="updateDepthFilter()" style="width:100%;padding:8px 10px;font-size:11px;border:1px solid #000;border-radius:6px;background:#fff;font-family:inherit;box-sizing:border-box;">
                 <div id="depthInfo" style="margin-top:8px;font-size:9px;color:#666;text-transform:uppercase;letter-spacing:0.04em;">
                     <span id="depthLabel">All depths</span>
                 </div>
@@ -697,11 +721,12 @@ network.once("stabilizationIterationsDone", function() {{
         instructions = """
             <div style="margin-top:14px;padding-top:14px;border-top:1px solid #e0e0e0;font-size:9px;color:#444;line-height:1.6;letter-spacing:0.01em;">
                 <span style="color:#000;font-weight:500;">Click main node</span> — Filter connections<br>
-                <span style="color:#000;font-weight:500;">Click background</span> — Reset view
+                <span style="color:#000;font-weight:500;">Click background</span> — Reset view<br>
+                <span style="color:#000;font-weight:500;">Arrow keys</span> — Pan view
             </div>
         """
 
-        return f"""<div style="position:absolute;top:20px;left:20px;background:#fafafa;padding:20px;border:1px solid #000;box-shadow:8px 8px 0 rgba(0,0,0,0.08);font-family:SF Mono,Monaco,Cascadia Code,monospace;z-index:1000;max-width:220px;">
+        return f"""<div style="position:absolute;top:20px;left:20px;background:#fafafa;padding:20px;border:1px solid #000;border-radius:12px;font-family:SF Mono,Monaco,Cascadia Code,monospace;z-index:1000;max-width:220px;">
             {global_score_html}
             {depth_selector}
             {instructions}
@@ -797,7 +822,7 @@ network.once("stabilizationIterationsDone", function() {{
         content = "".join(html_parts)
 
         return f"""
-        <div style="position:absolute;top:20px;right:20px;background:#fafafa;padding:20px;border:1px solid #000;box-shadow:8px 8px 0 rgba(0,0,0,0.08);font-family:SF Mono,Monaco,Cascadia Code,monospace;z-index:1000;max-width:220px;max-height:80vh;overflow-y:auto;">
+        <div style="position:absolute;top:20px;right:20px;background:#fafafa;padding:20px;border:1px solid #000;border-radius:12px;font-family:SF Mono,Monaco,Cascadia Code,monospace;z-index:1000;max-width:220px;max-height:80vh;overflow-y:auto;">
             <div style="font-size:11px;font-weight:500;color:#000;margin-bottom:16px;border-bottom:1px solid #000;padding-bottom:10px;text-transform:uppercase;letter-spacing:0.1em;">
                 Analyse
             </div>
