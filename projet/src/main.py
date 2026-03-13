@@ -246,27 +246,10 @@ def run_analysis(console: Console, params: dict):
     # Affichage du résumé
     formatter.display_summary(address1, address2, result.score, table1, table2)
 
-    # Export des données pour réutilisation
-    if params.get('export_json') or params.get('export_csv'):
-        console.print("\n[bold]Export des données...[/bold]")
-        exporter = RelationshipTableExporter()
-
-        if params.get('export_json'):
-            try:
-                json_path = exporter.export([table1, table2], format="json")
-                console.print(f"  JSON: [dim]{json_path}[/dim]")
-            except Exception as e:
-                console.print(f"  Export JSON échoué: {e}")
-
-        if params.get('export_csv'):
-            try:
-                csv_path = exporter.export([table1, table2], format="csv")
-                console.print(f"  CSV: [dim]{csv_path}[/dim]")
-            except Exception as e:
-                console.print(f"  Export CSV échoué: {e}")
-
-    # Visualisation
+    # Visualisation (générer d'abord pour obtenir le dossier de sortie)
     console.print("\n[bold]Génération des visualisations...[/bold]")
+
+    output_dir = None
 
     if params.get('show_matplotlib'):
         console.print("  [dim]Graphique statique matplotlib...[/dim]")
@@ -287,8 +270,34 @@ def run_analysis(console: Console, params: dict):
                 }
             )
             console.print(f"  [green]✓[/green] Interactif: [dim]{html_path}[/dim]")
+            # Extraire le dossier de sortie (dossier parent du fichier HTML)
+            from pathlib import Path
+            output_dir = str(Path(html_path).parent)
         except Exception as e:
             console.print(f"  [yellow]✗[/yellow] Échec: {e}")
+
+    # Export des données pour réutilisation (dans le même dossier que le HTML)
+    if params.get('export_json') or params.get('export_csv'):
+        console.print("\n[bold]Export des données...[/bold]")
+        from datetime import datetime
+
+        # Utiliser un timestamp unique pour tous les exports
+        export_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        exporter = RelationshipTableExporter(output_dir=output_dir if output_dir else "output")
+
+        if params.get('export_json'):
+            try:
+                json_path = exporter.export([table1, table2], format="json", filename=export_timestamp)
+                console.print(f"  JSON: [dim]{json_path}[/dim]")
+            except Exception as e:
+                console.print(f"  Export JSON échoué: {e}")
+
+        if params.get('export_csv'):
+            try:
+                csv_path = exporter.export([table1, table2], format="csv", filename=export_timestamp)
+                console.print(f"  CSV: [dim]{csv_path}[/dim]")
+            except Exception as e:
+                console.print(f"  Export CSV échoué: {e}")
 
     console.print("\n[bold green]✓ Analyse terminée![/bold green]")
 

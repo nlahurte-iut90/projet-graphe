@@ -41,42 +41,60 @@ class RelationshipTableExporter:
             ]
         }
 
-    def export(self, tables: List[AddressRelationshipTable], format: str = "json") -> str:
+    def export(self, tables: List[AddressRelationshipTable], format: str = "json", filename: str = None) -> str:
         """
         Exporte les tableaux vers un fichier.
 
         Args:
             tables: Liste des tableaux à exporter
             format: 'json' ou 'csv'
+            filename: Nom de fichier personnalisé (sans extension). Si None, utilise un timestamp.
 
         Returns:
             Chemin du fichier généré
         """
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        # Si le dossier parent est déjà timestampé (ex: output/20240313_120000),
+        # on n'ajoute pas de timestamp supplémentaire au fichier
+        parent_is_timestamped = False
+        try:
+            # Vérifie si le nom du dossier parent ressemble à un timestamp
+            parent_name = self.output_dir.name
+            if len(parent_name) == 15 and parent_name[8] == '_':  # Format YYYYMMDD_HHMMSS
+                int(parent_name[:8])  # Vérifie que c'est des chiffres
+                int(parent_name[9:])  # Vérifie que c'est des chiffres
+                parent_is_timestamped = True
+        except (ValueError, IndexError):
+            pass
+
+        if filename is None:
+            if parent_is_timestamped:
+                filename = "data"  # Nom simple si dossier déjà timestampé
+            else:
+                filename = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         if format == "json":
-            return self._export_json(tables, timestamp)
+            return self._export_json(tables, filename)
         elif format == "csv":
-            return self._export_csv(tables, timestamp)
+            return self._export_csv(tables, filename)
         else:
             raise ValueError(f"Format non supporté: {format}")
 
-    def _export_json(self, tables: List[AddressRelationshipTable], timestamp: str) -> str:
+    def _export_json(self, tables: List[AddressRelationshipTable], filename: str) -> str:
         """Exporte vers JSON."""
         data = {
-            "timestamp": timestamp,
+            "timestamp": filename,
             "tables": [self._table_to_dict(t) for t in tables]
         }
 
-        filepath = self.output_dir / f"relationships_{timestamp}.json"
+        filepath = self.output_dir / f"relationships_{filename}.json"
         with open(filepath, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2)
 
         return str(filepath)
 
-    def _export_csv(self, tables: List[AddressRelationshipTable], timestamp: str) -> str:
+    def _export_csv(self, tables: List[AddressRelationshipTable], filename: str) -> str:
         """Exporte vers CSV (une ligne par relation)."""
-        filepath = self.output_dir / f"relationships_{timestamp}.csv"
+        filepath = self.output_dir / f"relationships_{filename}.csv"
 
         with open(filepath, 'w', newline='', encoding='utf-8') as f:
             writer = csv.writer(f)
