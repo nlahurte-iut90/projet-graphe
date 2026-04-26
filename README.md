@@ -1,5 +1,6 @@
-#  Bananagraph
-![Bananagraph logo](/projet/logo.png)
+![Bananagraph](/projet/nom-ascii.png)
+
+
 **Analyse de corrélation entre adresses Ethereum par théorie des graphes**
 Détection de relations transactionnelles, scoring temporel avancé et visualisation interactive
 
