@@ -48,7 +48,7 @@ Détection de relations transactionnelles, scoring temporel avancé et visualisa
 1. **Cloner le dépôt**
 
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/nlahurte-iut90/projet-graphe
    cd bananagraph
    ```
 
